@@ -132,7 +132,11 @@ export class Monitor {
   }
   record(index, snap, at, trade) {
     const direction = this.counters[index].evaluate(snap, trade, this.settings.threshold);
-    if (direction) { this.recent.push({ at, series: index, direction, move: snap.move }); if (this.recent.length > 60) this.recent.shift(); }
+    // Sample the combined log; counters still evaluate every accepted execution.
+    if (direction && (!this.recent.length || at - this.recent.at(-1).at >= 1000)) {
+      this.recent.push({ at, series: index, direction, move: snap.move });
+      if (this.recent.length > 60) this.recent.shift();
+    }
   }
   frame(index, raw, at) {
     const feed = this.feeds[index]; let accepted = 0;

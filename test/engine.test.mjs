@@ -112,3 +112,20 @@ test('aggregate IDs remain exact at the signed int64 boundary', () => {
   assert.equal(m.state(START + 201).series[0].ready, false);
   assert.equal(m.state(START + 201).series[0].missed, 1);
 });
+
+test('recent log spaces all venues by one second without dropping excursion counts', () => {
+  const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+  send(m, 1, 200.1, START + 201, 3);
+  send(m, 0, 100.1, START + 202, 3);
+  m.state(START + 1000);
+  send(m, 2, 300.3, START + 1200, 3); // 999ms after the first logged entry.
+  send(m, 3, 400.4, START + 1201, 3); // Exactly one second is eligible.
+  const state = m.state(START + 1201);
+  assert.deepEqual(state.recent.map(e => [e.at, e.series]), [[START + 201, 1], [START + 1201, 3]]);
+  assert.deepEqual(state.series.slice(0, 4).map(s => s.up), [1, 1, 1, 1]);
+  assert.ok(state.series[4].up > 0);
+  m.reset(DEFAULT_SETTINGS, START + 1300);
+  m.state(START + 1500);
+  send(m, 0, 100.2, START + 1501, 4);
+  assert.deepEqual(m.state(START + 1501).recent.map(e => e.at), [START + 1501]);
+});
