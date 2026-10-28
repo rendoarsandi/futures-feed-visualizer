@@ -49,4 +49,4 @@ npm test
 npm run build
 ```
 
-Tests are offline and cover wire-frame acceptance, quiet windows, ID gaps and replays, weighted quorum, held-price eligibility, threshold excursions, maximum-lookback retention, exact aggregate IDs, worker reset validation and bounded display delivery. An optional `npm run smoke:live` opens real exchange streams for 15 seconds; it is not part of CI and does not measure venue latency.
+Tests are offline and cover wire-frame acceptance, quiet windows, ID gaps and replays, weighted quorum, held-price eligibility, threshold excursions, maximum-lookback retention, exact aggregate IDs, worker reset validation and bounded display delivery. An optional `npm run smoke:live` opens real exchange streams for 15 seconds; it is not part of the offline test suite and does not measure venue latency.

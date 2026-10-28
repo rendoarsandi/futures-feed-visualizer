@@ -8,4 +8,5 @@
 - Keep deployment static and Vercel-ready. Sessions are per tab; document browser suspension and exchange access limits. Do not promise venue or execution latency.
 - Keep development guidance here and usage/architecture in README.md. No account data, secrets, node_modules or build output in Git.
 - Run `npm run check`, `npm test`, `npm run build`, and `git diff --check` before committing. Unit tests remain offline; live checks are opt-in. Add coverage only for meaningful boundary contracts or credible regressions.
+- Keep checks local. Do not add GitHub Actions workflows; Vercel deployment uses its own Git integration.
 - Commit/push only when requested. Preserve the owner's profile stats markers when editing its separate README.
