@@ -123,6 +123,7 @@ export class Monitor {
   reset(settings, at) {
     this.settings = validateSettings(settings); this.epoch = Math.max(at, (this.epoch || 0) + 1); this.startedAt = at;
     this.counters = IDS.map(() => new Counter()); this.recent = []; this.lastPrices = new Array(5).fill(0); this.lastUpdates = new Array(5).fill(0);
+    this.lastLoggedAt = IDS.map(() => -Infinity);
   }
   connection(index, connected) {
     const feed = this.feeds[index];
@@ -132,8 +133,9 @@ export class Monitor {
   }
   record(index, snap, at, trade) {
     const direction = this.counters[index].evaluate(snap, trade, this.settings.threshold);
-    // Sample the combined log; counters still evaluate every accepted execution.
-    if (direction && (!this.recent.length || at - this.recent.at(-1).at >= 1000)) {
+    // Space each market independently; counters still evaluate every execution.
+    if (direction && at - this.lastLoggedAt[index] >= 1000) {
+      this.lastLoggedAt[index] = at;
       this.recent.push({ at, series: index, direction, move: snap.move });
       if (this.recent.length > 60) this.recent.shift();
     }

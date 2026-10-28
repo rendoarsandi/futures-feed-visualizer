@@ -30,7 +30,7 @@ The site opens the four public exchange WebSockets **from the visitor's browser*
 - Weighted movement averages eligible venues' **percentage returns**, rather than changes in their average raw price. At least two venues covering half the configured weight must have current-session lookback baselines. Zero weight disables that stream.
 - Binance forward aggregate-ID gaps reset its history and mark counts incomplete. Duplicate/reversed Binance IDs cannot replace accepted prices or timing. All venues filter replayed batches and reversed execution timestamps. Incoming event age does not itself exclude an ordered execution. Reconnects clear the affected stream's history.
 - A simulated entry occurs on an accepted execution crossing the threshold after movement has been observed inside the threshold. A held excursion counts once; crossing directly from above to below the band does not rearm it. Health reads can rearm counters but cannot create live entries. There are no orders, fills, fees or PnL in these counts.
-- The recent-entry log shows at most one entry per second across all venues and the weighted signal. Entries during that gap are omitted from the log; counters still include every qualifying excursion. Resetting the session clears the log and its gap.
+- The recent-entry log shows at most one entry per second for each venue and for the weighted signal independently. Different markets can log at the same time. Entries during a market’s gap are omitted from the log; counters still include every qualifying excursion. Resetting the session clears the log and its gap.
 
 ## Sessions and limitations
 
