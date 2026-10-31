@@ -50,7 +50,7 @@ test('actual worker publishes an offline session, applies settings atomically an
   const exit = once(worker, 'exit'); worker.postMessage({ type: 'stop' }); await exit;
 });
 
-test('live worker keeps spot independent of futures weights and closes replaced and stopped sockets', { timeout: 10000 }, async t => {
+test('live worker disconnects crossed-out markets, preserves toggles through settings and closes sockets', { timeout: 10000 }, async t => {
   const bootstrap = `
     const { parentPort } = require('node:worker_threads');
     const sockets = [];
@@ -61,13 +61,21 @@ test('live worker keeps spot independent of futures weights and closes replaced 
     };
     globalThis.postMessage = data => parentPort.postMessage(data);
     globalThis.WebSocket = class {
-      constructor(url) { this.url = url; this.closed = false; sockets.push(this); queueMicrotask(() => this.onopen?.()); }
+      static CONNECTING = 0; static OPEN = 1;
+      constructor(url) { this.url = url; this.closed = false; this.readyState = 1; sockets.push(this); queueMicrotask(() => this.onopen?.()); }
       send() {}
-      close() { this.closed = true; }
+      close() { this.closed = true; this.readyState = 3; }
     };
     import(${JSON.stringify(moduleURL)}).then(() => {
       parentPort.on('message', data => {
         if (data.type === 'inspect') parentPort.postMessage({ type: 'sockets', sockets: sockets.map(s => ({ url: s.url, closed: s.closed })) });
+        else if (data.type === 'trade') {
+          sockets.find(s => new URL(s.url).hostname === 'fstream.binance.com' && !s.closed).onmessage({ data: JSON.stringify(data.frame) });
+          parentPort.postMessage({ type: 'delivered' });
+        } else if (data.type === 'drop') {
+          sockets.find(s => new URL(s.url).hostname === 'stream.bybit.com' && !s.closed).close();
+          parentPort.postMessage({ type: 'dropped' });
+        }
         else globalThis.onmessage({ data });
       });
       parentPort.postMessage({ type: 'ready' });
@@ -85,15 +93,59 @@ test('live worker keeps spot independent of futures weights and closes replaced 
   let sockets = (await inspect()).sockets;
   assert.equal(sockets.filter(s => !s.closed).length, 5);
   assert.ok(sockets.some(s => new URL(s.url).hostname === 'stream.binance.com' && !s.closed));
-  wait = next('applied');
-  worker.postMessage({ type: 'settings', request: 1, settings: { lookbackMs: 200, threshold: .01, weights: [0, 0, 1, 1] } });
-  await wait;
+  let backgroundStates = 0;
+  const count = data => { if (data.type === 'state') backgroundStates++; };
+  worker.on('message', count);
+  worker.postMessage({ type: 'visibility', visible: false });
+  worker.postMessage({ type: 'ack' }); // Retire the initial state; hidden delivery must stay suppressed.
+  const trade = async (id, price) => {
+    const wait = next('delivered');
+    worker.postMessage({ type: 'trade', frame: { e: 'aggTrade', s: 'BTCUSDT', a: String(id), p: String(price), T: Date.now() } });
+    await wait;
+  };
+  await trade(1, 100);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  await trade(2, 100); await trade(3, 100.02);
+  wait = next('dropped'); worker.postMessage({ type: 'drop' }); await wait;
+  assert.equal(backgroundStates, 0); worker.off('message', count);
+  wait = next('state'); worker.postMessage({ type: 'visibility', visible: true });
+  const resumed = (await wait).state;
+  assert.equal(resumed.series[0].up, 1); // Hidden, unacknowledged UI does not block execution counting.
+  assert.equal(resumed.series[0].price, 100.02);
+  sockets = (await inspect()).sockets;
+  assert.equal(sockets.filter(s => !s.closed).length, 5);
+  assert.equal(sockets.filter(s => new URL(s.url).hostname === 'fstream.binance.com').length, 1);
+  assert.equal(sockets.filter(s => new URL(s.url).hostname === 'stream.bybit.com').length, 2);
+  const connectedSockets = sockets.length;
+  let request = 0;
+  const control = async (type, payload) => {
+    const applied = next('applied'), state = next('state');
+    worker.postMessage({ type, request: ++request, ...payload });
+    await applied; return (await state).state;
+  };
+  let state = await control('market', { index: 4, enabled: false });
+  assert.equal(state.series[4].status, 'disconnected');
+  sockets = (await inspect()).sockets;
+  assert.equal(sockets.length, connectedSockets); // Toggling one market does not replace the others.
+  assert.equal(sockets.filter(s => !s.closed).length, 4);
+  assert.ok(sockets.filter(s => new URL(s.url).hostname === 'stream.binance.com').every(s => s.closed));
+  state = await control('settings', { settings: { lookbackMs: 200, threshold: .01, weights: [0, 0, 1, 1] } });
+  assert.equal(state.series[4].enabled, false);
   sockets = (await inspect()).sockets;
   assert.ok(sockets.slice(0, 5).every(s => s.closed));
-  const active = sockets.filter(s => !s.closed);
+  let active = sockets.filter(s => !s.closed);
+  assert.equal(active.length, 2);
+  await control('settings', { settings: { lookbackMs: 300, threshold: .01, weights: [0, 0, 1, 1] } });
+  assert.deepEqual((await inspect()).sockets, sockets); // Resetting parameters cannot reopen a disabled feed.
+  await control('market', { index: 4, enabled: true });
+  sockets = (await inspect()).sockets;
+  active = sockets.filter(s => !s.closed);
   assert.equal(active.length, 3);
   assert.ok(active.some(s => new URL(s.url).hostname === 'stream.binance.com'));
   assert.ok(active.every(s => !['fstream.binance.com', 'stream.bybit.com'].includes(new URL(s.url).hostname)));
+  state = await control('market', { index: 5, enabled: false });
+  assert.equal(state.series[5].status, 'disconnected');
+  assert.deepEqual((await inspect()).sockets, sockets); // Weighted has no socket of its own.
   wait = next('stopped'); const exit = once(worker, 'exit'); worker.postMessage({ type: 'stop' });
   assert.equal((await wait).allClosed, true);
   await exit;

@@ -120,6 +120,7 @@ class Counter {
 export class Monitor {
   constructor(settings = DEFAULT_SETTINGS, at = Date.now(), demo = false) {
     this.feeds = IDS.slice(0, WEIGHTED_INDEX).map((_, i) => new TradeFeed(i)); this.epoch = at; this.demo = demo;
+    this.enabled = IDS.map(() => true); this.enabledAt = IDS.map(() => at);
     this.reset(settings, at);
   }
   reset(settings, at) {
@@ -129,12 +130,21 @@ export class Monitor {
   }
   connection(index, connected) {
     const feed = this.feeds[index];
+    if (connected && !this.enabled[index]) return;
     if (connected) feed.reset();
     feed.connected = connected;
     this.counters[index].armed = false;
     if (index !== SPOT_INDEX) this.counters[WEIGHTED_INDEX].armed = false;
   }
+  setEnabled(index, enabled, at) {
+    if (!Number.isInteger(index) || index < 0 || index >= IDS.length || typeof enabled !== 'boolean') throw new Error('Invalid market toggle');
+    if (this.enabled[index] === enabled) return;
+    this.enabled[index] = enabled; this.enabledAt[index] = at;
+    this.counters[index].armed = false;
+    if (index < this.feeds.length) this.connection(index, false);
+  }
   record(index, snap, at, trade) {
+    if (!this.enabled[index]) return;
     const direction = this.counters[index].evaluate(snap, trade, this.settings.threshold);
     // Space each market independently; counters still evaluate every execution.
     if (direction && at - this.lastLoggedAt[index] >= 1000) {
@@ -144,6 +154,7 @@ export class Monitor {
     }
   }
   frame(index, raw, at) {
+    if (!this.enabled[index]) return 0;
     const feed = this.feeds[index]; let accepted = 0;
     const frame = decodeFrame(raw);
     if (frame?.success === false || frame?.event === 'error' || (frame?.code && String(frame.code) !== '0')) return -1;
@@ -165,13 +176,14 @@ export class Monitor {
     }
     return accepted;
   }
-  weighted(now) {
+  weighted(now, snapshots = null) {
     const s = { ready: false, connected: false, price: 0, move: 0, updatedAt: 0 };
+    if (!this.enabled[WEIGHTED_INDEX]) return s;
     let total = 0, available = 0, count = 0, connected = 0;
     this.settings.weights.forEach((w, i) => {
       if (!w) return; total += w;
       const feed = this.feeds[i];
-      const part = feed.snapshot(now, this.settings.lookbackMs); if (part.connected) connected++;
+      const part = snapshots ? snapshots[i] : feed.snapshot(now, this.settings.lookbackMs); if (part.connected) connected++;
       if (!part.ready || !part.connected) return;
       count++; available += w; s.price += w * part.price; s.move += w * part.move;
       s.updatedAt = s.updatedAt ? Math.min(s.updatedAt, part.updatedAt) : part.updatedAt;
@@ -182,16 +194,16 @@ export class Monitor {
     return s;
   }
   demoSnapshots(at) {
-    const seconds = (at - this.startedAt) / 1000, ready = seconds >= this.settings.lookbackMs / 1000;
+    const seconds = (at - this.startedAt) / 1000;
     const all = this.feeds.map((_, i) => {
-      const enabled = i === SPOT_INDEX || this.settings.weights[i] > 0;
+      const enabled = this.enabled[i] && (i === SPOT_INDEX || this.settings.weights[i] > 0);
+      const ready = at - Math.max(this.startedAt, this.enabledAt[i]) >= this.settings.lookbackMs;
       const phase = seconds - i * .045;
       const price = t => 80000 + (i - 1) * 3 + 52 * Math.sin(t * 2 * Math.PI / 5) + 9 * Math.sin(t * 2 * Math.PI / 1.7);
       const p = price(phase), base = price(phase - this.settings.lookbackMs / 1000);
-      return { connected: enabled, ready: enabled && ready, price: enabled ? p : 0, move: (p - base) / base * 100, updatedAt: at };
+      return { connected: enabled, ready: enabled && ready, price: enabled ? p : 0, move: enabled ? (p - base) / base * 100 : 0, updatedAt: enabled ? at : 0 };
     });
-    const total = this.settings.weights.reduce((a, b) => a + b, 0);
-    all.push({ connected: true, ready, price: this.settings.weights.reduce((sum, w, i) => sum + all[i].price * w, 0) / total, move: this.settings.weights.reduce((sum, w, i) => sum + all[i].move * w, 0) / total, updatedAt: at });
+    all.push(this.weighted(at, all));
     return all;
   }
   state(at) {
@@ -202,9 +214,9 @@ export class Monitor {
       if (snap.price > 0) this.lastPrices[i] = snap.price;
       if (snap.updatedAt) this.lastUpdates[i] = snap.updatedAt;
       const c = this.counters[i], ready = snap.ready && snap.connected;
-      const status = i < 4 && this.settings.weights[i] === 0 ? 'off' : ready ? 'ready' : snap.connected ? 'waiting' : 'connecting';
+      const status = !this.enabled[i] ? 'disconnected' : i < 4 && this.settings.weights[i] === 0 ? 'off' : ready ? 'ready' : snap.connected ? 'waiting' : 'connecting';
       point.prices.push(this.lastPrices[i]); point.moves.push(snap.move); point.ready.push(ready); point.up.push(c.up); point.down.push(c.down);
-      return { id: IDS[i], name: NAMES[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed };
+      return { id: IDS[i], name: NAMES[i], enabled: this.enabled[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed };
     });
     return { mode: this.demo ? 'demo' : 'live', epoch: this.epoch, at, settings: this.settings, point, series, recent: this.recent.slice() };
   }

@@ -30,13 +30,13 @@
         <div class="chart-heading"><h2 id="move-title">200 ms movement</h2><span id="threshold-caption">Signals at ±0.01% · eligible periods only</span></div>
         <div class="plot" id="move-plot"><canvas id="move-chart" aria-label="Signed percentage movement with upper and lower signal thresholds"></canvas></div>
       </section>
-      <div class="chart-footer"><span>Hover a chart to inspect · click a feed name to hide its line</span><span id="session">Session starting</span></div>
+      <div class="chart-footer"><span>Hover to inspect · click a market to disconnect or reconnect</span><span id="session">Session starting</span></div>
     </div>
     <aside>
       <section class="side-section">
         <div class="section-heading"><h2>Feeds</h2><span id="ready-count">0 / 5 ready</span></div>
         <table class="feed-table"><thead><tr><th scope="col">Source</th><th scope="col">Price</th><th scope="col" id="move-column">Δ 200ms</th></tr></thead><tbody id="feeds"></tbody></table>
-        <p class="hint">Weighted averages each eligible futures venue’s own percentage return. Binance Spot is excluded. The weighted price line is a reference, not a cross-venue momentum calculation.</p>
+        <p class="hint">Crossed-out markets are disconnected and stop counting. Click again to reconnect. Weighted averages eligible futures returns; Binance Spot is excluded. Crossing out Weighted pauses its counter.</p>
       </section>
       <section class="side-section">
         <div class="section-heading"><h2>Simulated buys</h2><button id="reset" class="text-button" type="button">Reset</button></div>
@@ -54,7 +54,7 @@
         <label>OKX<input id="weight-2" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
         <label>Hyperliquid<input id="weight-3" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
       </div><p class="hint">At least two positive weights. Zero disables that stream. Apply above to start a new comparison session.</p></details>
-      <p class="method-note">Counters run in a browser worker, independently of chart refresh. Each tab has its own session; closing it stops counting. Background suspension and exchange access restrictions can interrupt feeds. This comparison does not measure venue latency or trading performance. <a href="?demo=1">Offline demo</a> · <a href="https://github.com/rendoarsandi/futures-feed-visualizer" target="_blank" rel="noopener noreferrer">Source</a></p>
+      <p class="method-note">Feeds keep running when you switch tabs, with automatic recovery when you return. The browser or phone may still suspend background processing. Each tab has its own session; closing it stops counting. Exchange access restrictions can interrupt feeds. This comparison does not measure venue latency or trading performance. <a href="?demo=1">Offline demo</a> · <a href="https://github.com/rendoarsandi/futures-feed-visualizer" target="_blank" rel="noopener noreferrer">Source</a></p>
     </aside>
   </main>
   <div id="tooltip" hidden></div>

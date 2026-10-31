@@ -16,7 +16,7 @@ export class StreamConnection {
     const venue = VENUES[this.index];
     const socket = new WebSocket(venue.urls[this.candidate % venue.urls.length]);
     this.socket = socket;
-    let lastFrame = performance.now();
+    let unansweredPings = 0;
     const send = data => socket.send(typeof data === 'string' ? data : JSON.stringify(data));
     const fail = () => {
       if (this.socket !== socket || this.stopped) return;
@@ -27,22 +27,31 @@ export class StreamConnection {
     this.deadline = setTimeout(fail, 10000);
     socket.onopen = () => {
       if (this.socket !== socket || this.stopped) return;
-      clearTimeout(this.deadline); this.delay = 1000; lastFrame = performance.now();
+      clearTimeout(this.deadline); this.delay = 1000; unansweredPings = 0;
       this.monitor.connection(this.index, true);
       if (venue.subscribe) send(venue.subscribe);
       if (venue.ping) this.heartbeat = setInterval(() => {
-        if (socket.bufferedAmount > 65536 || performance.now() - lastFrame > 30000) { fail(); return; }
+        // Count actual heartbeat opportunities. Delayed background timers alone
+        // do not prove the socket stopped responding.
+        if (socket.bufferedAmount > 65536 || unansweredPings >= 6) { fail(); return; }
+        unansweredPings++;
         try { send(venue.ping); } catch { fail(); }
       }, 5000);
       this.rotation = setTimeout(fail, 23 * 60 * 60 * 1000);
     };
     socket.onmessage = event => {
       if (this.socket !== socket || this.stopped) return;
-      const at = performance.timeOrigin + performance.now(); lastFrame = performance.now();
+      const at = performance.timeOrigin + performance.now(); unansweredPings = 0;
       if (typeof event.data !== 'string' || event.data.length > 1024 * 1024) { fail(); return; }
       if (this.monitor.frame(this.index, event.data, at) < 0) fail();
     };
     socket.onerror = socket.onclose = fail;
+  }
+  resume() {
+    if (this.stopped || this.socket?.readyState === WebSocket.OPEN || this.socket?.readyState === WebSocket.CONNECTING) return;
+    this.clearTimers();
+    if (this.socket) { this.socket.onopen = this.socket.onmessage = this.socket.onerror = this.socket.onclose = null; this.socket.close(); this.socket = null; }
+    this.monitor.connection(this.index, false); this.connect();
   }
   clearTimers() { clearTimeout(this.deadline); clearTimeout(this.retry); clearTimeout(this.rotation); clearInterval(this.heartbeat); }
   close() {

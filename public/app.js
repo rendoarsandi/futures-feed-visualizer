@@ -15,19 +15,16 @@ for (let i = 0; i < names.length; i++) {
   const nameCell = document.createElement('td');
   const button = document.createElement('button');
   button.className = 'feed-name'; button.type = 'button'; button.setAttribute('aria-pressed', 'true');
-  button.setAttribute('aria-label', `Show ${names[i]} line`);
+  button.setAttribute('aria-label', `${i === WEIGHTED_INDEX ? 'Disable' : 'Disconnect'} ${names[i]}`);
+  button.disabled = true;
   const swatch = document.createElement('span'); swatch.className = 'swatch'; swatch.style.backgroundColor = colors[i];
   button.append(swatch, document.createTextNode(names[i]));
-  button.addEventListener('click', () => {
-    if (hidden.has(i)) hidden.delete(i); else hidden.add(i);
-    button.setAttribute('aria-pressed', String(!hidden.has(i)));
-    requestDraw();
-  });
+  button.addEventListener('click', () => toggleMarket(i));
   const status = document.createElement('span'); status.className = 'feed-status'; status.textContent = 'connecting';
   nameCell.append(button, status);
   const price = document.createElement('td'), move = document.createElement('td');
   price.textContent = move.textContent = '—'; row.append(nameCell, price, move); $('feeds').append(row);
-  rows.push({ status, price, move });
+  rows.push({ button, status, price, move });
   const c = document.createElement('tr'); c.className = row.className;
   const cn = document.createElement('td'); cn.className = 'counter-name';
   const cs = swatch.cloneNode(); cn.append(cs, document.createTextNode(shortNames[i]));
@@ -49,7 +46,9 @@ function accept(next) {
   if (next.history) history = next.history;
   if (next.point && (!history.length || next.point.at > history.at(-1).at)) history.push(next.point);
   if (history.length > 2600) history.splice(0, history.length - 2600);
+  const visibilityChanged = next.series.some((s, i) => hidden.has(i) === s.enabled);
   state = next;
+  hidden = new Set(next.series.flatMap((s, i) => s.enabled ? [] : [i]));
   $('clock').textContent = `${time(next.at)} UTC`;
   $('mode').textContent = next.mode === 'demo' ? 'DEMO · SYNTHETIC' : 'PUBLIC FUTURES + SPOT TRADES';
   $('mode').classList.toggle('demo', next.mode === 'demo');
@@ -63,6 +62,9 @@ function accept(next) {
   $('gap-warning').hidden = !missed;
   $('gap-warning').textContent = `Missing Binance executions detected. Counters are incomplete; affected counters resume after a new baseline and an inside-threshold observation.`;
   next.series.forEach((s, i) => {
+    rows[i].button.disabled = Boolean(rows[i].pending);
+    rows[i].button.setAttribute('aria-pressed', String(s.enabled));
+    rows[i].button.setAttribute('aria-label', `${i === WEIGHTED_INDEX ? s.enabled ? 'Disable' : 'Enable' : s.enabled ? 'Disconnect' : 'Reconnect'} ${names[i]}`);
     rows[i].status.textContent = s.status + (!s.ready && s.price > 0 ? ' · held' : '');
     rows[i].price.textContent = s.price > 0 ? priceFormat.format(s.price) : '—';
     rows[i].move.textContent = s.ready ? pct(s.move) : '—';
@@ -85,7 +87,7 @@ function accept(next) {
   $('empty').hidden = history.some((p) => p.prices.some((value) => value > 0));
   const seconds = Math.max(0, Math.floor((next.at - next.point.at + (history.length ? next.point.at - history[0].at : 0)) / 1000));
   $('session').textContent = `${seconds}s chart history · counts since reset`;
-  if (!frozenAt) requestDraw();
+  if (!frozenAt || visibilityChanged) requestDraw();
 }
 
 const worker = new Worker(new URL('./feed-worker.js', import.meta.url), { type: 'module' });
@@ -107,8 +109,28 @@ worker.onmessage = ({ data }) => {
 };
 worker.onerror = () => { $('connection').textContent = 'Feed worker stopped · reload to reconnect'; $('connection').className = 'connection offline'; };
 worker.postMessage({ type: 'start', demo: new URLSearchParams(location.search).get('demo') === '1' });
+worker.postMessage({ type: 'visibility', visible: !document.hidden });
 window.addEventListener('pagehide', () => { worker.terminate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
+
+function sendRequest(type, payload) {
+  return new Promise((resolve, reject) => {
+    const request = ++requestID;
+    const timer = setTimeout(() => { requests.delete(request); reject(new Error('Feed worker did not respond; reload to reconnect')); }, 5000);
+    requests.set(request, { resolve, reject, timer }); worker.postMessage({ type, request, ...payload });
+  });
+}
+
+async function toggleMarket(index) {
+  if (!state) return;
+  const enabled = !state.series[index].enabled;
+  rows[index].pending = rows[index].button.disabled = true;
+  try {
+    await sendRequest('market', { index, enabled });
+    requestDraw();
+  } catch (error) { $('form-status').className = 'error'; $('form-status').textContent = error.message; }
+  finally { rows[index].pending = rows[index].button.disabled = false; }
+}
 
 async function applySettings(resetOnly = false) {
   if (resetOnly && !state) return;
@@ -117,11 +139,7 @@ async function applySettings(resetOnly = false) {
   };
   $('apply').disabled = $('reset').disabled = true; $('form-status').textContent = 'Applying…'; $('form-status').className = '';
   try {
-    await new Promise((resolve, reject) => {
-      const request = ++requestID;
-      const timer = setTimeout(() => { requests.delete(request); reject(new Error('Feed worker did not respond; reload to reconnect')); }, 5000);
-      requests.set(request, { resolve, reject, timer }); worker.postMessage({ type: 'settings', request, settings });
-    });
+    await sendRequest('settings', { settings });
     $('form-status').textContent = 'New comparison session';
   } catch (error) { $('form-status').className = 'error'; $('form-status').textContent = error.message; }
   finally { $('apply').disabled = $('reset').disabled = false; }
@@ -235,4 +253,10 @@ function draw() {
   }
 }
 
-document.addEventListener('visibilitychange', () => { if (!document.hidden) requestDraw(); });
+function updateVisibility() {
+  worker.postMessage({ type: 'visibility', visible: !document.hidden });
+  if (!document.hidden) requestDraw();
+}
+document.addEventListener('visibilitychange', updateVisibility);
+document.addEventListener('resume', updateVisibility);
+window.addEventListener('online', updateVisibility);

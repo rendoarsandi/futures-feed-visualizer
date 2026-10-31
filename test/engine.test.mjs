@@ -97,6 +97,70 @@ test('a spot execution cannot trigger weighted movement caused by an aging futur
   assert.equal(weighted.up, 1); // A futures execution authorizes the entry.
 });
 
+test('crossed-out markets reject trades and retain totals until a fresh reconnect baseline', async t => {
+  for (const venue of [0, SPOT_INDEX]) await t.test(String(venue), () => {
+    const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+    send(m, venue, 100.02, START + 201, 3);
+    const before = m.state(START + 201).series[venue];
+    assert.equal(before.up, 1);
+    m.setEnabled(venue, false, START + 202);
+    m.connection(venue, true); // A late socket-open callback cannot enable the market.
+    assert.equal(send(m, venue, 1000, START + 203, 4), 0);
+    let state = m.state(START + 1000), disabled = state.series[venue];
+    assert.equal(disabled.status, 'disconnected');
+    assert.equal(disabled.connected, false); assert.equal(disabled.ready, false);
+    assert.equal(disabled.up, before.up); assert.equal(disabled.down, before.down);
+    assert.equal(disabled.price, before.price); assert.equal(disabled.updatedAt, before.updatedAt);
+    assert.equal(state.recent.filter(e => e.series === venue).length, 1);
+    m.setEnabled(venue, true, START + 1000); m.connection(venue, true);
+    assert.equal(send(m, venue, 200, START + 1000, 1000), 1);
+    state = m.state(START + 1000);
+    assert.equal(state.series[venue].ready, false); assert.equal(state.series[venue].missed, 0);
+    send(m, venue, 200, START + 1200, 1001); m.state(START + 1200);
+    send(m, venue, 200.04, START + 1201, 1002);
+    assert.equal(m.state(START + 1201).series[venue].up, 2);
+    m.setEnabled(venue, false, START + 1202); m.reset(DEFAULT_SETTINGS, START + 1300);
+    assert.equal(m.state(START + 1300).series[venue].enabled, false);
+  });
+});
+
+test('crossing out Weighted stops its entries while individual markets continue', () => {
+  const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+  m.setEnabled(WEIGHTED_INDEX, false, START + 200);
+  [100, 200, 300, 400].forEach((price, i) => send(m, i, price * 1.001, START + 201, 3));
+  let state = m.state(START + 201);
+  assert.ok(state.series.slice(0, 4).every(s => s.up === 1));
+  assert.equal(state.series[WEIGHTED_INDEX].status, 'disconnected');
+  assert.equal(state.series[WEIGHTED_INDEX].up, 0);
+  assert.ok(state.recent.every(e => e.series !== WEIGHTED_INDEX));
+  m.setEnabled(WEIGHTED_INDEX, true, START + 202);
+  send(m, 0, 100.2, START + 203, 4);
+  assert.equal(m.state(START + 203).series[WEIGHTED_INDEX].up, 0); // Still outside the threshold; disarmed.
+  m.state(START + 500); // Quiet movement returns inside the threshold.
+  send(m, 0, 100.4, START + 501, 5);
+  state = m.state(START + 501);
+  assert.equal(state.series[WEIGHTED_INDEX].up, 1);
+});
+
+test('offline demo toggles freeze counters, preserve weighted quorum and warm up on resume', () => {
+  const m = new Monitor(DEFAULT_SETTINGS, START, true);
+  for (let ms = 0; ms <= 3000; ms += 50) m.state(START + ms);
+  const before = m.state(START + 3000).series[SPOT_INDEX];
+  assert.ok(before.up + before.down > 0);
+  m.setEnabled(SPOT_INDEX, false, START + 3000);
+  for (const i of [0, 1, 2]) m.setEnabled(i, false, START + 3000);
+  for (let ms = 3050; ms <= 6000; ms += 50) m.state(START + ms);
+  let state = m.state(START + 6000);
+  assert.equal(state.series[SPOT_INDEX].up, before.up); assert.equal(state.series[SPOT_INDEX].down, before.down);
+  assert.equal(state.series[SPOT_INDEX].updatedAt, before.updatedAt);
+  assert.equal(state.series[WEIGHTED_INDEX].ready, false);
+  m.setEnabled(SPOT_INDEX, true, START + 6000);
+  assert.equal(m.state(START + 6199).series[SPOT_INDEX].ready, false);
+  state = m.state(START + 6200);
+  assert.equal(state.series[SPOT_INDEX].ready, true);
+  assert.equal(state.series[WEIGHTED_INDEX].ready, false); // Spot cannot complete futures quorum.
+});
+
 test('only valid current-session executions affect price; event age does not exclude ordered trades', () => {
   const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
   for (let i = 0; i <= SPOT_INDEX; i++) {
