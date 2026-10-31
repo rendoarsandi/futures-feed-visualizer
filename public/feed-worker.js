@@ -1,9 +1,9 @@
-import { Monitor, DEFAULT_SETTINGS, validateSettings } from './engine.js';
+import { Monitor, DEFAULT_SETTINGS, SPOT_INDEX, validateSettings } from './engine.js';
 import { StreamConnection } from './streams.js';
 const now = () => performance.timeOrigin + performance.now();
 let monitor = null, connections = [], ticker = null, awaitingPaint = false;
 function closeStreams() { for (const connection of connections) connection?.close(); connections = []; }
-function openStreams() { if (!monitor.demo) connections = monitor.settings.weights.map((weight, i) => weight ? new StreamConnection(i, monitor) : null); }
+function openStreams() { if (!monitor.demo) connections = monitor.feeds.map((_, i) => i === SPOT_INDEX || monitor.settings.weights[i] > 0 ? new StreamConnection(i, monitor) : null); }
 function publish() {
   // A blocked renderer receives at most one pending chart update. Counting
   // continues synchronously for every accepted execution in this worker.

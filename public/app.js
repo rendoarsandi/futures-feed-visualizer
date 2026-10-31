@@ -1,6 +1,6 @@
-const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#63e0bb'];
-const names = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Weighted'];
-const shortNames = ['Binance', 'Bybit', 'OKX', 'Hyperliquid', 'Weighted'];
+import { NAMES as names, WEIGHTED_INDEX } from './engine.js';
+const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#67d5ef', '#63e0bb'];
+const shortNames = ['Binance Fut.', 'Bybit', 'OKX', 'Hyperliquid', 'Binance Spot', 'Weighted'];
 const $ = (id) => document.getElementById(id);
 const priceFormat = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const countFormat = new Intl.NumberFormat('en-US');
@@ -9,9 +9,9 @@ const rows = [], counterRows = [];
 const time = (at, millis = false) => new Date(at).toISOString().slice(11, millis ? 23 : 19);
 const pct = (value, decimals = 4) => `${value > 0 ? '+' : ''}${value.toFixed(decimals)}%`;
 
-for (let i = 0; i < 5; i++) {
+for (let i = 0; i < names.length; i++) {
   const row = document.createElement('tr');
-  row.className = i === 4 ? 'weighted' : '';
+  row.className = i === WEIGHTED_INDEX ? 'weighted' : '';
   const nameCell = document.createElement('td');
   const button = document.createElement('button');
   button.className = 'feed-name'; button.type = 'button'; button.setAttribute('aria-pressed', 'true');
@@ -51,14 +51,14 @@ function accept(next) {
   if (history.length > 2600) history.splice(0, history.length - 2600);
   state = next;
   $('clock').textContent = `${time(next.at)} UTC`;
-  $('mode').textContent = next.mode === 'demo' ? 'DEMO · SYNTHETIC' : 'PUBLIC FUTURES TRADES';
+  $('mode').textContent = next.mode === 'demo' ? 'DEMO · SYNTHETIC' : 'PUBLIC FUTURES + SPOT TRADES';
   $('mode').classList.toggle('demo', next.mode === 'demo');
   $('move-title').textContent = `${next.settings.lookbackMs} ms movement`;
   $('move-column').textContent = `Δ ${next.settings.lookbackMs}ms`;
   $('threshold-caption').textContent = `Signals at ±${next.settings.threshold}% · eligible periods only`;
   $('rearm-caption').textContent = `One entry per excursion. Re-arms inside ±${next.settings.threshold}%. No orders are placed.`;
   $('weight-summary').textContent = next.settings.weights.join(' : ');
-  $('ready-count').textContent = `${next.series.slice(0, 4).filter((s) => s.ready).length} / 4 ready`;
+  $('ready-count').textContent = `${next.series.slice(0, WEIGHTED_INDEX).filter((s) => s.ready).length} / ${WEIGHTED_INDEX} ready`;
   const missed = next.series.reduce((sum, s) => sum + s.missed, 0);
   $('gap-warning').hidden = !missed;
   $('gap-warning').textContent = `Missing Binance executions detected. Counters are incomplete; affected counters resume after a new baseline and an inside-threshold observation.`;
@@ -95,7 +95,7 @@ worker.onmessage = ({ data }) => {
   if (data.type === 'state') {
     try {
       accept(data.state);
-      const connected = data.state.series.slice(0, 4).filter(s => s.connected).length;
+      const connected = data.state.series.slice(0, WEIGHTED_INDEX).filter(s => s.connected).length;
       $('connection').textContent = data.state.mode === 'demo' ? 'Offline synthetic preview' : `${connected} public streams connected`;
       $('connection').className = `connection ${connected >= 2 || data.state.mode === 'demo' ? 'online' : 'offline'}`;
     } finally { worker.postMessage({ type: 'ack' }); }
@@ -151,7 +151,7 @@ function draw() {
   if (!state) return;
   const end = frozenAt || state.at, start = end - Number($('window').value) * 1000;
   const points = (frozenHistory || history).filter((p) => p.at >= start && p.at <= end);
-  const visible = [0, 1, 2, 3, 4].filter((i) => !hidden.has(i));
+  const visible = names.map((_, i) => i).filter((i) => !hidden.has(i));
   let inspected = null;
   for (const [canvas, key] of plots) {
     const rect = canvas.getBoundingClientRect(), width = rect.width, height = rect.height, dpr = Math.min(devicePixelRatio || 1, 2);
@@ -187,7 +187,7 @@ function draw() {
     }
     ctx.save(); ctx.beginPath(); ctx.rect(left, top, plotWidth, plotHeight); ctx.clip();
     for (const i of visible) {
-      ctx.strokeStyle = colors[i]; ctx.lineWidth = i === 4 ? 2.4 : 1.2; ctx.globalAlpha = i === 4 ? 1 : .85;
+      ctx.strokeStyle = colors[i]; ctx.lineWidth = i === WEIGHTED_INDEX ? 2.4 : 1.2; ctx.globalAlpha = i === WEIGHTED_INDEX ? 1 : .85;
       if (key === 'prices') {
         for (const ready of [false, true]) {
           ctx.setLineDash(ready ? [] : [4, 4]); ctx.globalAlpha = ready ? 1 : .62; ctx.beginPath();
@@ -214,7 +214,7 @@ function draw() {
       ctx.globalAlpha = 1;
       if (key === 'moves') for (let j = 1; j < points.length; j++) {
         const p = points[j], before = points[j - 1]; if (!p.ready[i]) continue; if (p.up[i] === before.up[i] && p.down[i] === before.down[i]) continue;
-        const xx = x(p.at), yy = y(p.moves[i]); ctx.fillStyle = colors[i]; ctx.beginPath(); ctx.arc(xx, yy, i === 4 ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
+        const xx = x(p.at), yy = y(p.moves[i]); ctx.fillStyle = colors[i]; ctx.beginPath(); ctx.arc(xx, yy, i === WEIGHTED_INDEX ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
       }
     }
     if (pointer && pointer.canvas === canvas && points.length && pointer.x >= left && pointer.x <= width - right) {

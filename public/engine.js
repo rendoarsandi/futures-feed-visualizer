@@ -1,7 +1,9 @@
 // Port of the executed-trade window, weighted quorum and excursion counters
 // from Poly-Bot 15fe010. Receipt time owns the rolling window; event age is diagnostic.
-export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'weighted'];
-export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Weighted'];
+export const SPOT_INDEX = 4;
+export const WEIGHTED_INDEX = 5;
+export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'binance-spot', 'weighted'];
+export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Binance Spot', 'Weighted'];
 export const DEFAULT_SETTINGS = { lookbackMs: 200, threshold: .01, weights: [1, 1, 1, 1] };
 const DIGITS = /^\d+$/;
 
@@ -56,7 +58,7 @@ export function decodeFrame(raw) {
 export function parseTrades(index, frame) {
   if (!frame || frame.isSnapshot || frame.data?.isSnapshot) return [];
   let trades = [];
-  if (index === 0) {
+  if (index === 0 || index === SPOT_INDEX) {
     const t = frame.stream ? frame.data : frame;
     if (t?.e === 'aggTrade' && t.s === 'BTCUSDT') trades = [{ price: t.p, eventMS: t.T, id: integerID(t.a) }];
   } else if (index === 1 && frame.topic === 'publicTrade.BTCUSDT' && Array.isArray(frame.data)) {
@@ -79,7 +81,7 @@ class TradeFeed {
     const key = `${eventMS}:${id}`;
     if (this.seen.has(key)) return null;
     let gap = 0;
-    if (this.index === 0) {
+    if (this.index === 0 || this.index === SPOT_INDEX) {
       const numeric = integerID(id);
       if (numeric === null) return null;
       const n = BigInt(numeric);
@@ -117,19 +119,20 @@ class Counter {
 
 export class Monitor {
   constructor(settings = DEFAULT_SETTINGS, at = Date.now(), demo = false) {
-    this.feeds = [0, 1, 2, 3].map(i => new TradeFeed(i)); this.epoch = at; this.demo = demo;
+    this.feeds = IDS.slice(0, WEIGHTED_INDEX).map((_, i) => new TradeFeed(i)); this.epoch = at; this.demo = demo;
     this.reset(settings, at);
   }
   reset(settings, at) {
     this.settings = validateSettings(settings); this.epoch = Math.max(at, (this.epoch || 0) + 1); this.startedAt = at;
-    this.counters = IDS.map(() => new Counter()); this.recent = []; this.lastPrices = new Array(5).fill(0); this.lastUpdates = new Array(5).fill(0);
+    this.counters = IDS.map(() => new Counter()); this.recent = []; this.lastPrices = IDS.map(() => 0); this.lastUpdates = IDS.map(() => 0);
     this.lastLoggedAt = IDS.map(() => -Infinity);
   }
   connection(index, connected) {
     const feed = this.feeds[index];
     if (connected) feed.reset();
     feed.connected = connected;
-    this.counters[index].armed = this.counters[4].armed = false;
+    this.counters[index].armed = false;
+    if (index !== SPOT_INDEX) this.counters[WEIGHTED_INDEX].armed = false;
   }
   record(index, snap, at, trade) {
     const direction = this.counters[index].evaluate(snap, trade, this.settings.threshold);
@@ -148,18 +151,26 @@ export class Monitor {
       const session = feed.session, result = feed.accept(trade, at);
       if (!result) continue;
       accepted++;
-      if (session !== feed.session) this.counters[index].armed = this.counters[4].armed = false;
-      if (result.gap) { this.counters[index].missed += result.gap; this.counters[4].missed++; }
+      if (session !== feed.session) {
+        this.counters[index].armed = false;
+        if (index !== SPOT_INDEX) this.counters[WEIGHTED_INDEX].armed = false;
+      }
+      if (result.gap) {
+        this.counters[index].missed += result.gap;
+        if (index !== SPOT_INDEX) this.counters[WEIGHTED_INDEX].missed++;
+      }
       this.record(index, feed.snapshot(at, this.settings.lookbackMs), at, true);
-      this.record(4, this.weighted(at), at, true);
+      // Spot has its own counters and cannot trigger or disarm futures signals.
+      if (index !== SPOT_INDEX) this.record(WEIGHTED_INDEX, this.weighted(at), at, true);
     }
     return accepted;
   }
   weighted(now) {
     const s = { ready: false, connected: false, price: 0, move: 0, updatedAt: 0 };
     let total = 0, available = 0, count = 0, connected = 0;
-    this.feeds.forEach((feed, i) => {
-      const w = this.settings.weights[i]; if (!w) return; total += w;
+    this.settings.weights.forEach((w, i) => {
+      if (!w) return; total += w;
+      const feed = this.feeds[i];
       const part = feed.snapshot(now, this.settings.lookbackMs); if (part.connected) connected++;
       if (!part.ready || !part.connected) return;
       count++; available += w; s.price += w * part.price; s.move += w * part.move;
@@ -172,14 +183,15 @@ export class Monitor {
   }
   demoSnapshots(at) {
     const seconds = (at - this.startedAt) / 1000, ready = seconds >= this.settings.lookbackMs / 1000;
-    const all = this.settings.weights.map((w, i) => {
+    const all = this.feeds.map((_, i) => {
+      const enabled = i === SPOT_INDEX || this.settings.weights[i] > 0;
       const phase = seconds - i * .045;
       const price = t => 80000 + (i - 1) * 3 + 52 * Math.sin(t * 2 * Math.PI / 5) + 9 * Math.sin(t * 2 * Math.PI / 1.7);
       const p = price(phase), base = price(phase - this.settings.lookbackMs / 1000);
-      return { connected: !!w, ready: !!w && ready, price: w ? p : 0, move: (p - base) / base * 100, updatedAt: at };
+      return { connected: enabled, ready: enabled && ready, price: enabled ? p : 0, move: (p - base) / base * 100, updatedAt: at };
     });
     const total = this.settings.weights.reduce((a, b) => a + b, 0);
-    all.push({ connected: true, ready, price: all.reduce((sum, s, i) => sum + s.price * this.settings.weights[i], 0) / total, move: all.reduce((sum, s, i) => sum + s.move * this.settings.weights[i], 0) / total, updatedAt: at });
+    all.push({ connected: true, ready, price: this.settings.weights.reduce((sum, w, i) => sum + all[i].price * w, 0) / total, move: this.settings.weights.reduce((sum, w, i) => sum + all[i].move * w, 0) / total, updatedAt: at });
     return all;
   }
   state(at) {
