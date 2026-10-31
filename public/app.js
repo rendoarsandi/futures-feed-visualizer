@@ -90,7 +90,7 @@ function accept(next) {
   if (!frozenAt || visibilityChanged) requestDraw();
 }
 
-const worker = new Worker(new URL('./feed-worker.js', import.meta.url), { type: 'module' });
+const worker = new Worker(new URL('./feed-worker.js?v=2', import.meta.url), { type: 'module' });
 let requestID = 0;
 const requests = new Map();
 worker.onmessage = ({ data }) => {
