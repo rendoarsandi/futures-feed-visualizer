@@ -1,6 +1,6 @@
-import { NAMES as names, WEIGHTED_INDEX } from './engine.js';
-const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#67d5ef', '#63e0bb'];
-const shortNames = ['Binance Fut.', 'Bybit', 'OKX', 'Hyperliquid', 'Binance Spot', 'Weighted'];
+import { NAMES as names, DEFAULT_SETTINGS, WEIGHTED_INDEX } from './engine.js';
+const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#d4e294', '#e9ab74', '#67d5ef', '#63e0bb'];
+const shortNames = ['Binance Fut.', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Fut.', 'Binance Spot', 'Weighted'];
 const $ = (id) => document.getElementById(id);
 const priceFormat = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const countFormat = new Intl.NumberFormat('en-US');
@@ -135,7 +135,7 @@ async function toggleMarket(index) {
 async function applySettings(resetOnly = false) {
   if (resetOnly && !state) return;
   const settings = resetOnly ? state.settings : {
-    threshold: Number($('threshold').value), lookbackMs: Number($('lookback').value), weights: [0, 1, 2, 3].map((i) => Number($(`weight-${i}`).value)),
+    threshold: Number($('threshold').value), lookbackMs: Number($('lookback').value), weights: DEFAULT_SETTINGS.weights.map((_, i) => Number($(`weight-${i}`).value)),
   };
   $('apply').disabled = $('reset').disabled = true; $('form-status').textContent = 'Applying…'; $('form-status').className = '';
   try {

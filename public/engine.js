@@ -1,16 +1,16 @@
 // Port of the executed-trade window, weighted quorum and excursion counters
 // from Poly-Bot 15fe010. Receipt time owns the rolling window; event age is diagnostic.
-export const SPOT_INDEX = 4;
-export const WEIGHTED_INDEX = 5;
-export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'binance-spot', 'weighted'];
-export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Binance Spot', 'Weighted'];
-export const DEFAULT_SETTINGS = { lookbackMs: 200, threshold: .01, weights: [1, 1, 1, 1] };
+export const SPOT_INDEX = 6;
+export const WEIGHTED_INDEX = 7;
+export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'deribit', 'kraken-futures', 'binance-spot', 'weighted'];
+export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Futures', 'Binance Spot', 'Weighted'];
+export const DEFAULT_SETTINGS = { lookbackMs: 200, threshold: .01, weights: [1, 1, 1, 1, 1, 1] };
 const DIGITS = /^\d+$/;
 
 export function validateSettings(settings) {
   if (!Number.isInteger(settings?.lookbackMs) || settings.lookbackMs < 100 || settings.lookbackMs > 15000) throw new Error('Lookback must be 100–15000 ms');
   if (!Number.isFinite(settings.threshold) || settings.threshold < .000001 || settings.threshold > 10) throw new Error('Threshold must be 0.000001–10 percent');
-  if (!Array.isArray(settings.weights) || settings.weights.length !== 4 || settings.weights.some(w => !Number.isFinite(w) || w < 0 || w > 1000) || settings.weights.filter(w => w > 0).length < 2) throw new Error('At least two weights must be positive; each must be 0–1000');
+  if (!Array.isArray(settings.weights) || settings.weights.length !== SPOT_INDEX || settings.weights.some(w => !Number.isFinite(w) || w < 0 || w > 1000) || settings.weights.filter(w => w > 0).length < 2) throw new Error('At least two weights must be positive; each must be 0–1000');
   return { lookbackMs: settings.lookbackMs, threshold: settings.threshold, weights: settings.weights.slice() };
 }
 
@@ -68,6 +68,11 @@ export function parseTrades(index, frame) {
     trades = frame.data.filter(t => t?.instId === 'BTC-USDT-SWAP').map(t => ({ price: t.px, eventMS: t.ts, id: typeof t.tradeId === 'string' ? t.tradeId : null }));
   } else if (index === 3 && frame.channel === 'trades' && Array.isArray(frame.data)) {
     trades = frame.data.filter(t => t?.coin === 'BTC').map(t => ({ price: t.px, eventMS: t.time, id: integerID(t.tid) }));
+  } else if (index === 4 && frame.method === 'subscription' && frame.params?.channel === 'trades.BTC-PERPETUAL.100ms' && Array.isArray(frame.params.data)) {
+    trades = frame.params.data.filter(t => t?.instrument_name === 'BTC-PERPETUAL').map(t => ({ price: t.price, eventMS: t.timestamp, id: typeof t.trade_id === 'string' ? t.trade_id : null }));
+  } else if (index === 5 && frame.feed === 'trade' && frame.product_id === 'PF_XBTUSD') {
+    // trade_snapshot is historical bootstrap data, never a live execution.
+    trades = [{ price: frame.price, eventMS: frame.time, id: typeof frame.uid === 'string' ? frame.uid : null }];
   }
   return trades;
 }
@@ -157,7 +162,7 @@ export class Monitor {
     if (!this.enabled[index]) return 0;
     const feed = this.feeds[index]; let accepted = 0;
     const frame = decodeFrame(raw);
-    if (frame?.success === false || frame?.event === 'error' || (frame?.code && String(frame.code) !== '0')) return -1;
+    if (frame?.success === false || frame?.event === 'error' || frame?.event === 'subscribed_failed' || frame?.event === 'alert' || frame?.error || (frame?.code && String(frame.code) !== '0')) return -1;
     for (const trade of parseTrades(index, frame)) {
       const session = feed.session, result = feed.accept(trade, at);
       if (!result) continue;
@@ -214,7 +219,7 @@ export class Monitor {
       if (snap.price > 0) this.lastPrices[i] = snap.price;
       if (snap.updatedAt) this.lastUpdates[i] = snap.updatedAt;
       const c = this.counters[i], ready = snap.ready && snap.connected;
-      const status = !this.enabled[i] ? 'disconnected' : i < 4 && this.settings.weights[i] === 0 ? 'off' : ready ? 'ready' : snap.connected ? 'waiting' : 'connecting';
+      const status = !this.enabled[i] ? 'disconnected' : i < SPOT_INDEX && this.settings.weights[i] === 0 ? 'off' : ready ? 'ready' : snap.connected ? 'waiting' : 'connecting';
       point.prices.push(this.lastPrices[i]); point.moves.push(snap.move); point.ready.push(ready); point.up.push(c.up); point.down.push(c.down);
       return { id: IDS[i], name: NAMES[i], enabled: this.enabled[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed };
     });

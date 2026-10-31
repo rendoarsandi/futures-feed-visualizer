@@ -24,7 +24,7 @@
     <div class="charts">
       <section class="chart-panel price-panel" aria-labelledby="price-title">
         <div class="chart-heading"><h2 id="price-title">BTC price</h2><span>Solid: ready · dashed: last known</span></div>
-        <div class="plot" id="price-plot"><canvas id="price-chart" aria-label="Line chart comparing four futures prices, Binance Spot and weighted futures price"></canvas><div class="empty" id="empty">Waiting for prices…</div></div>
+        <div class="plot" id="price-plot"><canvas id="price-chart" aria-label="Line chart comparing six futures prices, Binance Spot and weighted futures price"></canvas><div class="empty" id="empty">Waiting for prices…</div></div>
       </section>
       <section class="chart-panel move-panel" aria-labelledby="move-title">
         <div class="chart-heading"><h2 id="move-title">200 ms movement</h2><span id="threshold-caption">Signals at ±0.01% · eligible periods only</span></div>
@@ -34,9 +34,10 @@
     </div>
     <aside>
       <section class="side-section">
-        <div class="section-heading"><h2>Feeds</h2><span id="ready-count">0 / 5 ready</span></div>
+        <div class="section-heading"><h2>Feeds</h2><span id="ready-count">0 / 7 ready</span></div>
         <table class="feed-table"><thead><tr><th scope="col">Source</th><th scope="col">Price</th><th scope="col" id="move-column">Δ 200ms</th></tr></thead><tbody id="feeds"></tbody></table>
         <p class="hint">Crossed-out markets are disconnected and stop counting. Click again to reconnect. Weighted averages eligible futures returns; Binance Spot is excluded. Crossing out Weighted pauses its counter.</p>
+        <p class="hint">Live WebSocket trades. Deribit publishes in 100 ms batches; Kraken Futures uses PF_XBTUSD.</p>
       </section>
       <section class="side-section">
         <div class="section-heading"><h2>Simulated buys</h2><button id="reset" class="text-button" type="button">Reset</button></div>
@@ -48,11 +49,13 @@
         <div class="section-heading"><h2>Latest signals</h2><span>UTC</span></div>
         <ol id="recent"><li class="hint">Waiting for a threshold crossing</li></ol>
       </section>
-      <details class="side-section weights-section"><summary>Futures weights <span id="weight-summary">1 : 1 : 1 : 1</span></summary><div class="weight-inputs">
+      <details class="side-section weights-section"><summary>Futures weights <span id="weight-summary">1 : 1 : 1 : 1 : 1 : 1</span></summary><div class="weight-inputs">
         <label>Binance<input id="weight-0" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
         <label>Bybit<input id="weight-1" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
         <label>OKX<input id="weight-2" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
         <label>Hyperliquid<input id="weight-3" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
+        <label>Deribit<input id="weight-4" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
+        <label>Kraken Fut.<input id="weight-5" form="settings" type="number" min="0" max="1000" step="any" value="1" required></label>
       </div><p class="hint">At least two positive weights. Zero disables that stream. Apply above to start a new comparison session.</p></details>
       <p class="method-note">Feeds keep running when you switch tabs, with automatic recovery when you return. The browser or phone may still suspend background processing. Each tab has its own session; closing it stops counting. Exchange access restrictions can interrupt feeds. This comparison does not measure venue latency or trading performance. <a href="?demo=1">Offline demo</a> · <a href="https://github.com/rendoarsandi/futures-feed-visualizer" target="_blank" rel="noopener noreferrer">Source</a></p>
     </aside>

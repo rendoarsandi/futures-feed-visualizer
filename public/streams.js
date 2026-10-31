@@ -3,12 +3,16 @@ export const VENUES = [
   { urls: ['wss://stream.bybit.com/v5/public/linear', 'wss://stream.bytick.com/v5/public/linear'], subscribe: { op: 'subscribe', args: ['publicTrade.BTCUSDT'] }, ping: { op: 'ping' } },
   { urls: ['wss://ws.okx.com/ws/v5/public', 'wss://wsaws.okx.com/ws/v5/public'], subscribe: { op: 'subscribe', args: [{ channel: 'trades', instId: 'BTC-USDT-SWAP' }] }, ping: 'ping' },
   { urls: ['wss://api.hyperliquid.xyz/ws'], subscribe: { method: 'subscribe', subscription: { type: 'trades', coin: 'BTC' } }, ping: { method: 'ping' } },
+  // Deribit's unauthenticated trade tape batches executions every 100 ms.
+  { urls: ['wss://www.deribit.com/ws/api/v2'], subscribe: { jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['trades.BTC-PERPETUAL.100ms'] } }, ping: { jsonrpc: '2.0', id: 2, method: 'public/test', params: {} } },
+  { urls: ['wss://futures.kraken.com/ws/v1'], subscribe: { event: 'subscribe', feed: 'trade', product_ids: ['PF_XBTUSD'] }, heartbeat: { event: 'subscribe', feed: 'heartbeat' } },
   { urls: ['wss://stream.binance.com/ws/btcusdt@aggTrade', 'wss://stream.binance.com/stream?streams=btcusdt@aggTrade'] },
 ];
 
 // Browser-native WebSockets answer Binance control PING frames automatically.
 // Control frames are not exposed to JavaScript, so Binance quiet prices cannot
-// be used as a heartbeat watchdog. Other venues provide explicit text PONGs.
+// be used as a heartbeat watchdog. Other venues provide text responses or,
+// for Kraken Futures, a subscribed server heartbeat (not a JSON ping).
 export class StreamConnection {
   constructor(index, monitor) { this.index = index; this.monitor = monitor; this.candidate = 0; this.delay = 1000; this.stopped = false; this.connect(); }
   connect() {
@@ -16,7 +20,7 @@ export class StreamConnection {
     const venue = VENUES[this.index];
     const socket = new WebSocket(venue.urls[this.candidate % venue.urls.length]);
     this.socket = socket;
-    let unansweredPings = 0;
+    let missedHeartbeats = 0;
     const send = data => socket.send(typeof data === 'string' ? data : JSON.stringify(data));
     const fail = () => {
       if (this.socket !== socket || this.stopped) return;
@@ -27,21 +31,22 @@ export class StreamConnection {
     this.deadline = setTimeout(fail, 10000);
     socket.onopen = () => {
       if (this.socket !== socket || this.stopped) return;
-      clearTimeout(this.deadline); this.delay = 1000; unansweredPings = 0;
+      clearTimeout(this.deadline); this.delay = 1000; missedHeartbeats = 0;
       this.monitor.connection(this.index, true);
       if (venue.subscribe) send(venue.subscribe);
-      if (venue.ping) this.heartbeat = setInterval(() => {
+      if (venue.heartbeat) send(venue.heartbeat);
+      if (venue.ping || venue.heartbeat) this.heartbeat = setInterval(() => {
         // Count actual heartbeat opportunities. Delayed background timers alone
         // do not prove the socket stopped responding.
-        if (socket.bufferedAmount > 65536 || unansweredPings >= 6) { fail(); return; }
-        unansweredPings++;
-        try { send(venue.ping); } catch { fail(); }
+        if (socket.bufferedAmount > 65536 || missedHeartbeats >= 6) { fail(); return; }
+        missedHeartbeats++;
+        try { if (venue.ping) send(venue.ping); } catch { fail(); }
       }, 5000);
       this.rotation = setTimeout(fail, 23 * 60 * 60 * 1000);
     };
     socket.onmessage = event => {
       if (this.socket !== socket || this.stopped) return;
-      const at = performance.timeOrigin + performance.now(); unansweredPings = 0;
+      const at = performance.timeOrigin + performance.now(); missedHeartbeats = 0;
       if (typeof event.data !== 'string' || event.data.length > 1024 * 1024) { fail(); return; }
       if (this.monitor.frame(this.index, event.data, at) < 0) fail();
     };

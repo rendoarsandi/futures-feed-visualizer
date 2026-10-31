@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
+import { SPOT_INDEX, WEIGHTED_INDEX } from '../public/engine.js';
 const moduleURL = new URL('../public/feed-worker.js', import.meta.url).href;
 
 test('actual worker publishes an offline session, applies settings atomically and bounds pending chart messages', { timeout: 10000 }, async t => {
@@ -33,7 +34,7 @@ test('actual worker publishes an offline session, applies settings atomically an
   assert.equal(extra, 0); worker.off('message', count);
   wait = next(); worker.postMessage({ type: 'ack' });
   const current = await wait; assert.equal(current.type, 'state'); assert.ok(current.state.at > initial.state.at);
-  wait = next(); worker.postMessage({ type: 'settings', request: 1, settings: { lookbackMs: 300, threshold: 0, weights: [1, 1, 1, 1] } });
+  wait = next(); worker.postMessage({ type: 'settings', request: 1, settings: { lookbackMs: 300, threshold: 0, weights: [1, 1, 1, 1, 1, 1] } });
   const invalid = await wait; assert.equal(invalid.type, 'error'); assert.equal(invalid.request, 1);
   wait = next(); worker.postMessage({ type: 'ack' });
   const unchanged = await wait; assert.equal(unchanged.state.epoch, initial.state.epoch); assert.equal(unchanged.state.settings.threshold, .01);
@@ -42,7 +43,7 @@ test('actual worker publishes an offline session, applies settings atomically an
     const listen = data => { if (data.type === 'state') { worker.off('message', listen); resolve(data); } };
     worker.on('message', listen);
   });
-  worker.postMessage({ type: 'settings', request: 2, settings: { lookbackMs: 300, threshold: .015, weights: [1, 2, 1, 1] } });
+  worker.postMessage({ type: 'settings', request: 2, settings: { lookbackMs: 300, threshold: .015, weights: [1, 2, 1, 1, 2, 3] } });
   assert.equal((await applied).type, 'applied');
   const state = (await updated).state;
   assert.equal(state.settings.lookbackMs, 300); assert.equal(state.settings.threshold, .015); assert.ok(state.epoch > initial.state.epoch);
@@ -91,7 +92,7 @@ test('live worker disconnects crossed-out markets, preserves toggles through set
   let wait = next('state'); worker.postMessage({ type: 'start' }); await wait;
   const inspect = () => { const wait = next('sockets'); worker.postMessage({ type: 'inspect' }); return wait; };
   let sockets = (await inspect()).sockets;
-  assert.equal(sockets.filter(s => !s.closed).length, 5);
+  assert.equal(sockets.filter(s => !s.closed).length, 7);
   assert.ok(sockets.some(s => new URL(s.url).hostname === 'stream.binance.com' && !s.closed));
   let backgroundStates = 0;
   const count = data => { if (data.type === 'state') backgroundStates++; };
@@ -113,7 +114,7 @@ test('live worker disconnects crossed-out markets, preserves toggles through set
   assert.equal(resumed.series[0].up, 1); // Hidden, unacknowledged UI does not block execution counting.
   assert.equal(resumed.series[0].price, 100.02);
   sockets = (await inspect()).sockets;
-  assert.equal(sockets.filter(s => !s.closed).length, 5);
+  assert.equal(sockets.filter(s => !s.closed).length, 7);
   assert.equal(sockets.filter(s => new URL(s.url).hostname === 'fstream.binance.com').length, 1);
   assert.equal(sockets.filter(s => new URL(s.url).hostname === 'stream.bybit.com').length, 2);
   const connectedSockets = sockets.length;
@@ -123,28 +124,29 @@ test('live worker disconnects crossed-out markets, preserves toggles through set
     worker.postMessage({ type, request: ++request, ...payload });
     await applied; return (await state).state;
   };
-  let state = await control('market', { index: 4, enabled: false });
-  assert.equal(state.series[4].status, 'disconnected');
+  let state = await control('market', { index: SPOT_INDEX, enabled: false });
+  assert.equal(state.series[SPOT_INDEX].status, 'disconnected');
   sockets = (await inspect()).sockets;
   assert.equal(sockets.length, connectedSockets); // Toggling one market does not replace the others.
-  assert.equal(sockets.filter(s => !s.closed).length, 4);
+  assert.equal(sockets.filter(s => !s.closed).length, 6);
   assert.ok(sockets.filter(s => new URL(s.url).hostname === 'stream.binance.com').every(s => s.closed));
-  state = await control('settings', { settings: { lookbackMs: 200, threshold: .01, weights: [0, 0, 1, 1] } });
-  assert.equal(state.series[4].enabled, false);
+  state = await control('settings', { settings: { lookbackMs: 200, threshold: .01, weights: [0, 0, 0, 0, 1, 1] } });
+  assert.equal(state.series[SPOT_INDEX].enabled, false);
   sockets = (await inspect()).sockets;
-  assert.ok(sockets.slice(0, 5).every(s => s.closed));
+  assert.ok(sockets.slice(0, 7).every(s => s.closed));
   let active = sockets.filter(s => !s.closed);
   assert.equal(active.length, 2);
-  await control('settings', { settings: { lookbackMs: 300, threshold: .01, weights: [0, 0, 1, 1] } });
+  assert.deepEqual(active.map(s => new URL(s.url).hostname).sort(), ['futures.kraken.com', 'www.deribit.com']);
+  await control('settings', { settings: { lookbackMs: 300, threshold: .01, weights: [0, 0, 0, 0, 1, 1] } });
   assert.deepEqual((await inspect()).sockets, sockets); // Resetting parameters cannot reopen a disabled feed.
-  await control('market', { index: 4, enabled: true });
+  await control('market', { index: SPOT_INDEX, enabled: true });
   sockets = (await inspect()).sockets;
   active = sockets.filter(s => !s.closed);
   assert.equal(active.length, 3);
   assert.ok(active.some(s => new URL(s.url).hostname === 'stream.binance.com'));
   assert.ok(active.every(s => !['fstream.binance.com', 'stream.bybit.com'].includes(new URL(s.url).hostname)));
-  state = await control('market', { index: 5, enabled: false });
-  assert.equal(state.series[5].status, 'disconnected');
+  state = await control('market', { index: WEIGHTED_INDEX, enabled: false });
+  assert.equal(state.series[WEIGHTED_INDEX].status, 'disconnected');
   assert.deepEqual((await inspect()).sockets, sockets); // Weighted has no socket of its own.
   wait = next('stopped'); const exit = once(worker, 'exit'); worker.postMessage({ type: 'stop' });
   assert.equal((await wait).allClosed, true);

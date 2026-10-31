@@ -9,11 +9,13 @@ function wire(venue, price, at, id, overrides = {}) {
     { topic: 'publicTrade.BTCUSDT', type: 'snapshot', data: [{ s: 'BTCUSDT', S: 'Buy', p: String(price), T: ms, i: String(id) }] },
     { arg: { channel: 'trades', instId: 'BTC-USDT-SWAP' }, data: [{ instId: 'BTC-USDT-SWAP', px: String(price), ts: String(ms), tradeId: String(id) }] },
     { channel: 'trades', data: [{ coin: 'BTC', px: String(price), time: ms, tid: String(id) }] },
+    { jsonrpc: '2.0', method: 'subscription', params: { channel: 'trades.BTC-PERPETUAL.100ms', data: [{ instrument_name: 'BTC-PERPETUAL', price, timestamp: ms, trade_id: String(id), mark_price: 999999 }] } },
+    { feed: 'trade', product_id: 'PF_XBTUSD', price, time: ms, uid: String(id) },
   ];
   return JSON.stringify({ ...messages[venue === SPOT_INDEX ? 0 : venue], ...overrides });
 }
 function send(m, venue, price, at, id) { return m.frame(venue, wire(venue, price, at, id), at); }
-function warm(m, prices = [100, 200, 300, 400, 100]) {
+function warm(m, prices = [100, 200, 300, 400, 500, 600, 100]) {
   prices.forEach((price, i) => { m.connection(i, true); send(m, i, price, START, 1); send(m, i, price, START + 200, 2); });
   m.state(START + 200);
 }
@@ -43,7 +45,7 @@ test('wire executions retain quiet prices, reject replay/order errors and rebuil
 });
 
 test('weighted returns use each venue baseline and require two contributors with half the configured weight', () => {
-  const m = new Monitor({ ...DEFAULT_SETTINGS, weights: [4, 2, 1, 1] }, START); warm(m);
+  const m = new Monitor({ ...DEFAULT_SETTINGS, weights: [4, 2, 1, 1, 0, 0] }, START); warm(m);
   [101, 204, 297, 400].forEach((price, i) => send(m, i, price, START + 300, 3));
   let s = m.state(START + 300); close(s.series[WEIGHTED_INDEX].move, .875); close(s.series[WEIGHTED_INDEX].price, 188.625);
   m.connection(0, false); s = m.state(START + 300);
@@ -69,7 +71,7 @@ test('spot prices, gaps and connection changes leave the weighted signal indepen
   assert.deepEqual(state.series[WEIGHTED_INDEX], before);
   m.connection(SPOT_INDEX, false); m.connection(SPOT_INDEX, true);
   assert.deepEqual(m.state(START + 203).series[WEIGHTED_INDEX], before);
-  m.connection(0, false); m.connection(1, false); m.connection(2, false);
+  for (const i of [0, 1, 2, 4, 5]) m.connection(i, false);
   send(m, SPOT_INDEX, 500, START + 204, 1);
   send(m, SPOT_INDEX, 500, START + 404, 2);
   state = m.state(START + 404);
@@ -148,7 +150,7 @@ test('offline demo toggles freeze counters, preserve weighted quorum and warm up
   const before = m.state(START + 3000).series[SPOT_INDEX];
   assert.ok(before.up + before.down > 0);
   m.setEnabled(SPOT_INDEX, false, START + 3000);
-  for (const i of [0, 1, 2]) m.setEnabled(i, false, START + 3000);
+  for (const i of [0, 1, 2, 4, 5]) m.setEnabled(i, false, START + 3000);
   for (let ms = 3050; ms <= 6000; ms += 50) m.state(START + ms);
   let state = m.state(START + 6000);
   assert.equal(state.series[SPOT_INDEX].up, before.up); assert.equal(state.series[SPOT_INDEX].down, before.down);
@@ -244,4 +246,45 @@ test('recent log spaces each market independently without dropping simultaneous 
   m.state(START + 1500);
   send(m, 0, 101, START + 1501, 8);
   assert.deepEqual(m.state(START + 1501).recent.filter(e => e.series === 0).map(e => e.at), [START + 1501]);
+});
+
+test('Deribit batches every execution and Kraken snapshots never seed live history', () => {
+  const m = new Monitor(DEFAULT_SETTINGS, START);
+  m.connection(4, true); m.connection(5, true);
+  const kraken = JSON.parse(wire(5, 100, START, 'first'));
+  assert.equal(m.frame(5, JSON.stringify({ feed: 'trade_snapshot', product_id: 'PF_XBTUSD', trades: [kraken] }), START), 0);
+  assert.equal(m.frame(5, JSON.stringify({ feed: 'heartbeat', time: START }), START), 0);
+  assert.equal(m.state(START + 200).series[5].price, 0);
+  assert.equal(m.frame(5, JSON.stringify({ ...kraken, product_id: 'PF_ETHUSD' }), START), 0);
+  assert.equal(m.frame(5, JSON.stringify({ ...kraken, feed: 'ticker' }), START), 0);
+  const frame = JSON.parse(wire(4, 100, START, 'first'));
+  assert.equal(m.frame(4, JSON.stringify({ ...frame, params: { ...frame.params, channel: 'ticker.BTC-PERPETUAL.100ms' } }), START), 0);
+  const foreign = { ...frame.params.data[0], instrument_name: 'ETH-PERPETUAL' };
+  assert.equal(m.frame(4, JSON.stringify({ ...frame, params: { ...frame.params, data: [foreign] } }), START), 0);
+  assert.equal(m.frame(4, JSON.stringify(frame), START), 1);
+  send(m, 4, 100, START + 200, 'second'); m.state(START + 200);
+  const trade = frame.params.data[0];
+  frame.params.data = [
+    { ...trade, price: 101, timestamp: START + 201, trade_id: 'third' },
+    { ...trade, price: 100, timestamp: START + 202, trade_id: 'fourth' },
+    { ...trade, price: 99, timestamp: START + 203, trade_id: 'fifth' },
+  ];
+  assert.equal(m.frame(4, JSON.stringify(frame), START + 203), 3);
+  const state = m.state(START + 203).series[4];
+  assert.equal(state.price, 99); assert.equal(state.up, 1); assert.equal(state.down, 1);
+});
+
+test('Deribit and Kraken returns can form futures quorum and reconnects require new baselines', () => {
+  const m = new Monitor({ ...DEFAULT_SETTINGS, weights: [0, 0, 0, 0, 1, 3] }, START);
+  for (const i of [4, 5]) { m.connection(i, true); send(m, i, i === 4 ? 100 : 200, START, 'first'); }
+  m.state(START + 200);
+  send(m, 4, 101, START + 201, 'second'); send(m, 5, 204, START + 201, 'second');
+  let weighted = m.state(START + 201).series[WEIGHTED_INDEX];
+  assert.equal(weighted.ready, true); close(weighted.move, 1.75); assert.equal(weighted.up, 1);
+  m.connection(4, false);
+  assert.equal(m.state(START + 202).series[WEIGHTED_INDEX].ready, false);
+  m.connection(4, true); send(m, 4, 100, START + 203, 'first');
+  assert.equal(m.state(START + 203).series[WEIGHTED_INDEX].ready, false);
+  assert.equal(m.state(START + 403).series[WEIGHTED_INDEX].ready, true);
+  assert.throws(() => m.reset({ ...DEFAULT_SETTINGS, weights: [0, 0, 0, 0, 0, 1] }, START + 404), /At least two/);
 });

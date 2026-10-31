@@ -1,6 +1,6 @@
 # Futures Feed Visualizer
 
-Live BTC futures prices and momentum from **Binance USD-M, Bybit, OKX and Hyperliquid**, alongside **Binance Spot** and a futures-only weighted signal. Two charts, adjustable lookback and threshold, futures venue weights, and simulated Up/Down entry counters.
+Live BTC futures prices and momentum from **Binance USD-M, Bybit, OKX, Hyperliquid, Deribit and Kraken Futures**, alongside **Binance Spot** and a futures-only weighted signal. Two charts, adjustable lookback and threshold, futures venue weights, and simulated Up/Down entry counters.
 
 **[Source](https://github.com/rendoarsandi/futures-feed-visualizer) · [Deploy on Vercel](https://vercel.com/new)**
 
@@ -21,7 +21,7 @@ Open **http://127.0.0.1:5173**. For the explicitly synthetic, offline preview, o
 2. Keep the root directory at the repository root. `vercel.json` supplies the static build configuration: **Other** framework, `npm run build`, output directory `dist`.
 3. Deploy. No environment variables, API keys, Functions or separate feed server are needed. Later pushes to `main` deploy through Vercel's Git integration.
 
-The site opens five public market-data WebSockets **from the visitor's browser**, rather than from Vercel. Supported domains are explicitly allowed in the deployment's Content Security Policy. Exchange restrictions on a visitor's region/network still apply; an unavailable stream is shown as connecting, with any previously observed price held as a dashed reference. It never silently falls back to an order book, mark or another market.
+The site opens seven public market-data WebSockets **from the visitor's browser**, rather than from Vercel. Supported domains are explicitly allowed in the deployment's Content Security Policy. Exchange restrictions on a visitor's region/network still apply; an unavailable stream is shown as connecting, with any previously observed price held as a dashed reference. It never silently falls back to an order book, mark or another market.
 
 ## Signal rules
 
@@ -34,7 +34,7 @@ The site opens five public market-data WebSockets **from the visitor's browser**
 
 ## Sessions and limitations
 
-Feed processing and counters run in a dedicated browser worker, separately from chart drawing. UI updates are limited to 20 Hz with at most one pending chart message. Switching tabs suppresses chart delivery while sockets, heartbeats and execution counting continue in the worker. Returning to the tab publishes fresh state and retries disconnected sockets without replacing healthy connections. Delayed background timers alone do not trigger the text-heartbeat watchdog; it requires repeated unanswered pings. Pausing a chart affects presentation only. History holds at most 2600 display points, and recent signals at most 60.
+Feed processing and counters run in a dedicated browser worker, separately from chart drawing. UI updates are limited to 20 Hz with at most one pending chart message. Switching tabs suppresses chart delivery while sockets, heartbeats and execution counting continue in the worker. Returning to the tab publishes fresh state and retries disconnected sockets without replacing healthy connections. Delayed background timers alone do not trigger the text-heartbeat watchdog; it requires repeated heartbeat checks without incoming messages. Pausing a chart affects presentation only. History holds at most 2600 display points, and recent signals at most 60.
 
 Click a market name to cross it out, hide its line and disconnect its socket. Its price is held and its counters stop; existing totals and recent entries remain. Disabled futures cannot contribute to the weighted signal, which still requires two eligible venues and half the configured weight. Click again to reconnect with a fresh lookback baseline. Crossing out Weighted pauses only its own counter; individual feeds continue. These choices also apply to the offline demo and persist through Apply and Reset within the tab.
 
@@ -52,6 +52,8 @@ npm test
 npm run build
 ```
 
+Deribit uses the public [BTC-PERPETUAL executed-trade channel](https://docs.deribit.com/subscriptions/trades/tradesinstrument_nameinterval) over `wss://www.deribit.com/ws/api/v2`, with 100 ms publication batches. Its unbatched `raw` channel requires authentication and is not used. Every trade in each batch is evaluated separately. Kraken Futures uses the [PF_XBTUSD perpetual trade feed](https://docs.kraken.com/exchange/api-reference/futures-websocket/trade) over `wss://futures.kraken.com/ws/v1`; its initial historical `trade_snapshot` is ignored. Both are pushed WebSocket feeds, with no REST polling. Deribit uses public connection tests; Kraken subscribes to its server heartbeat. Subscription errors trigger reconnects, and both venues use the same replay rejection and fresh reconnect baselines as the other feeds. BTC-PERPETUAL and PF_XBTUSD are USD-quoted contracts; the USDT venues retain their own percentage returns without FX adjustment.
+
 The added Spot feed uses Binance’s public [aggregate trade stream](https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#aggregate-trade-streams).
 
-Tests are offline and cover wire-frame acceptance, quiet windows, ID gaps and replays, weighted quorum, held-price eligibility, threshold excursions, maximum-lookback retention, exact aggregate IDs, worker reset validation and bounded display delivery. An optional `npm run smoke:live` opens real exchange streams for 15 seconds; it is not part of the offline test suite and does not measure venue latency.
+Tests are offline and cover wire-frame acceptance, quiet windows, ID gaps and replays, weighted quorum, held-price eligibility, threshold excursions, maximum-lookback retention, exact aggregate IDs, worker reset validation and bounded display delivery. An optional `npm run smoke:live` opens real exchange streams for 15 seconds and reports accepted live executions for each venue; set `LIVE_MS=90000` for a longer observation or `LIVE_VENUES=deribit,kraken-futures` to require executions specifically from those venues. A requested venue without a live execution fails the check; quiet periods or exchange access restrictions can cause this. It is not part of the offline test suite and does not measure venue latency.
