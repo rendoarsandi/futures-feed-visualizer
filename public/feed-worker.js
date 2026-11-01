@@ -6,7 +6,7 @@ function closeStreams() { for (const connection of connections) connection?.clos
 function openStreams() {
   if (monitor.demo) return;
   monitor.feeds.forEach((_, i) => {
-    const active = monitor.enabled[i] && (i === SPOT_INDEX || monitor.settings.weights[i] > 0);
+    const active = monitor.enabled[i] && (i >= SPOT_INDEX || monitor.settings.weights[i] > 0);
     if (active && !connections[i]) connections[i] = new StreamConnection(i, monitor);
     else if (!active && connections[i]) { connections[i].close(); connections[i] = null; }
   });

@@ -1,9 +1,15 @@
-import { NAMES as names, DEFAULT_SETTINGS, WEIGHTED_INDEX } from './engine.js';
-const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#d4e294', '#e9ab74', '#67d5ef', '#63e0bb'];
-const shortNames = ['Binance Fut.', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Fut.', 'Binance Spot', 'Weighted'];
+import { NAMES as names, DEFAULT_SETTINGS, POLYMARKET_INDEX, WEIGHTED_INDEX } from './engine.js';
+const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#d4e294', '#e9ab74', '#67d5ef', '#ff79c6', '#63e0bb'];
+const shortNames = ['Binance Fut.', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Fut.', 'Binance Spot', 'Polymarket 5m', 'Weighted'];
 const $ = (id) => document.getElementById(id);
 const priceFormat = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const countFormat = new Intl.NumberFormat('en-US');
+const formatPrice = (i, value) => i === POLYMARKET_INDEX ? `${(value * 100).toFixed(1)}¢` : priceFormat.format(value);
+const expiryLabel = (s, at) => {
+  if (!s.enabled || !s.expiresAt) return '';
+  const sec = Math.max(0, Math.ceil((s.expiresAt - at) / 1000));
+  return ` · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')} left`;
+};
 let state = null, history = [], hidden = new Set(), frozenAt = null, frozenHistory = null, pointer = null, scheduled = false, recentKey = '';
 const rows = [], counterRows = [];
 const time = (at, millis = false) => new Date(at).toISOString().slice(11, millis ? 23 : 19);
@@ -25,6 +31,7 @@ for (let i = 0; i < names.length; i++) {
   const price = document.createElement('td'), move = document.createElement('td');
   price.textContent = move.textContent = '—'; row.append(nameCell, price, move); $('feeds').append(row);
   rows.push({ button, status, price, move });
+  if (i === POLYMARKET_INDEX) { counterRows.push(null); continue; }
   const c = document.createElement('tr'); c.className = row.className;
   const cn = document.createElement('td'); cn.className = 'counter-name';
   const cs = swatch.cloneNode(); cn.append(cs, document.createTextNode(shortNames[i]));
@@ -50,7 +57,7 @@ function accept(next) {
   state = next;
   hidden = new Set(next.series.flatMap((s, i) => s.enabled ? [] : [i]));
   $('clock').textContent = `${time(next.at)} UTC`;
-  $('mode').textContent = next.mode === 'demo' ? 'DEMO · SYNTHETIC' : 'PUBLIC FUTURES + SPOT TRADES';
+  $('mode').textContent = next.mode === 'demo' ? 'DEMO · SYNTHETIC' : 'PUBLIC FUTURES + SPOT + POLYMARKET 5M';
   $('mode').classList.toggle('demo', next.mode === 'demo');
   $('move-title').textContent = `${next.settings.lookbackMs} ms movement`;
   $('move-column').textContent = `Δ ${next.settings.lookbackMs}ms`;
@@ -65,13 +72,15 @@ function accept(next) {
     rows[i].button.disabled = Boolean(rows[i].pending);
     rows[i].button.setAttribute('aria-pressed', String(s.enabled));
     rows[i].button.setAttribute('aria-label', `${i === WEIGHTED_INDEX ? s.enabled ? 'Disable' : 'Enable' : s.enabled ? 'Disconnect' : 'Reconnect'} ${names[i]}`);
-    rows[i].status.textContent = s.status + (!s.ready && s.price > 0 ? ' · held' : '');
-    rows[i].price.textContent = s.price > 0 ? priceFormat.format(s.price) : '—';
+    rows[i].status.textContent = s.status + (!s.ready && s.price > 0 ? ' · held' : '') + (i === POLYMARKET_INDEX ? expiryLabel(s, next.at) : '');
+    rows[i].price.textContent = s.price > 0 ? formatPrice(i, s.price) : '—';
     rows[i].move.textContent = s.ready ? pct(s.move) : '—';
     rows[i].move.className = s.ready ? (s.move > 0 ? 'positive' : s.move < 0 ? 'negative' : '') : '';
-    counterRows[i].up.textContent = countFormat.format(s.up);
-    counterRows[i].down.textContent = countFormat.format(s.down);
-    counterRows[i].total.textContent = countFormat.format(s.up + s.down);
+    if (counterRows[i]) {
+      counterRows[i].up.textContent = countFormat.format(s.up);
+      counterRows[i].down.textContent = countFormat.format(s.down);
+      counterRows[i].total.textContent = countFormat.format(s.up + s.down);
+    }
   });
   const key = JSON.stringify(next.recent.slice(-10));
   if (key !== recentKey) {
@@ -90,7 +99,7 @@ function accept(next) {
   if (!frozenAt || visibilityChanged) requestDraw();
 }
 
-const worker = new Worker(new URL('./feed-worker.js?v=2', import.meta.url), { type: 'module' });
+const worker = new Worker(new URL('./feed-worker.js?v=3', import.meta.url), { type: 'module' });
 let requestID = 0;
 const requests = new Map();
 worker.onmessage = ({ data }) => {
@@ -170,20 +179,37 @@ function draw() {
   const end = frozenAt || state.at, start = end - Number($('window').value) * 1000;
   const points = (frozenHistory || history).filter((p) => p.at >= start && p.at <= end);
   const visible = names.map((_, i) => i).filter((i) => !hidden.has(i));
+  const btcVisible = visible.filter((i) => i !== POLYMARKET_INDEX), polyVisible = !hidden.has(POLYMARKET_INDEX);
   let inspected = null;
   for (const [canvas, key] of plots) {
     const rect = canvas.getBoundingClientRect(), width = rect.width, height = rect.height, dpr = Math.min(devicePixelRatio || 1, 2);
     if (!width || !height) continue;
     if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) { canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr); }
     const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
-    const left = 82, right = 17, top = 10, bottom = 25, plotWidth = width - left - right, plotHeight = height - top - bottom;
-    let min = Infinity, max = -Infinity;
-    for (const p of points) for (const i of visible) if ((key === 'prices' ? p.prices[i] > 0 : p.ready[i]) && Number.isFinite(p[key][i])) { min = Math.min(min, p[key][i]); max = Math.max(max, p[key][i]); }
+    const left = 82, right = polyVisible ? 58 : 17, top = 10, bottom = 25, plotWidth = width - left - right, plotHeight = height - top - bottom;
+    let min = Infinity, max = -Infinity, polyMin = Infinity, polyMax = -Infinity;
+    for (const p of points) for (const i of btcVisible) if ((key === 'prices' ? p.prices[i] > 0 : p.ready[i]) && Number.isFinite(p[key][i])) { min = Math.min(min, p[key][i]); max = Math.max(max, p[key][i]); }
     if (key === 'moves') { max = Math.max(Math.abs(min), Math.abs(max), state.settings.threshold * 1.65); if (!Number.isFinite(max)) max = state.settings.threshold * 1.65; min = -max; }
     else if (!Number.isFinite(min)) { min = 79990; max = 80010; }
     else { const pad = Math.max(.4, (max - min) * .1); min -= pad; max += pad; }
+    if (polyVisible) {
+      for (const p of points) if ((key === 'prices' ? p.prices[POLYMARKET_INDEX] > 0 : p.ready[POLYMARKET_INDEX]) && Number.isFinite(p[key][POLYMARKET_INDEX])) {
+        polyMin = Math.min(polyMin, p[key][POLYMARKET_INDEX]); polyMax = Math.max(polyMax, p[key][POLYMARKET_INDEX]);
+      }
+      if (key === 'moves') { polyMax = Math.max(Math.abs(polyMin), Math.abs(polyMax), .5); if (!Number.isFinite(polyMax)) polyMax = .5; polyMin = -polyMax; }
+      else if (!Number.isFinite(polyMin)) { polyMin = 0; polyMax = 1; }
+      else {
+        const span = Math.max(.04, polyMax - polyMin), pad = span * .15;
+        polyMin = Math.max(0, polyMin - pad); polyMax = Math.min(1, polyMax + pad);
+        if (polyMax - polyMin < .04) { const mid = (polyMin + polyMax) / 2; polyMin = Math.max(0, mid - .02); polyMax = Math.min(1, polyMin + .04); }
+      }
+    }
     const x = (at) => left + (at - start) / (end - start) * plotWidth;
     const y = (value) => top + (max - value) / (max - min || 1) * plotHeight;
+    const yFor = (i, value) => {
+      const lo = i === POLYMARKET_INDEX ? polyMin : min, hi = i === POLYMARKET_INDEX ? polyMax : max;
+      return top + (hi - value) / (hi - lo || 1) * plotHeight;
+    };
     ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif'; ctx.lineWidth = 1;
     if (key === 'moves') {
       ctx.fillStyle = '#63e0bb09'; ctx.fillRect(left, top, plotWidth, Math.max(0, y(state.settings.threshold) - top));
@@ -193,6 +219,11 @@ function draw() {
       const value = min + (max - min) * j / 4, yy = Math.round(y(value)) + .5;
       ctx.strokeStyle = '#252e3a'; ctx.beginPath(); ctx.moveTo(left, yy); ctx.lineTo(width - right, yy); ctx.stroke();
       ctx.fillStyle = '#a1acba'; ctx.textAlign = 'right'; ctx.fillText(key === 'prices' ? priceFormat.format(value) : `${value.toFixed(3)}%`, left - 8, yy + 3);
+      if (polyVisible) {
+        const pv = polyMin + (polyMax - polyMin) * j / 4;
+        ctx.fillStyle = colors[POLYMARKET_INDEX]; ctx.textAlign = 'left';
+        ctx.fillText(key === 'prices' ? formatPrice(POLYMARKET_INDEX, pv) : `${pv.toFixed(2)}%`, width - right + 6, yy + 3);
+      }
     }
     const timeTicks = plotWidth < 400 ? 2 : 4;
     for (let j = 0; j <= timeTicks; j++) {
@@ -205,7 +236,7 @@ function draw() {
     }
     ctx.save(); ctx.beginPath(); ctx.rect(left, top, plotWidth, plotHeight); ctx.clip();
     for (const i of visible) {
-      ctx.strokeStyle = colors[i]; ctx.lineWidth = i === WEIGHTED_INDEX ? 2.4 : 1.2; ctx.globalAlpha = i === WEIGHTED_INDEX ? 1 : .85;
+      ctx.strokeStyle = colors[i]; ctx.lineWidth = i === WEIGHTED_INDEX ? 2.4 : i === POLYMARKET_INDEX ? 1.8 : 1.2; ctx.globalAlpha = i === WEIGHTED_INDEX || i === POLYMARKET_INDEX ? 1 : .85;
       if (key === 'prices') {
         for (const ready of [false, true]) {
           ctx.setLineDash(ready ? [] : [4, 4]); ctx.globalAlpha = ready ? 1 : .62; ctx.beginPath();
@@ -214,7 +245,7 @@ function draw() {
             if (!(before.prices[i] > 0 && p.prices[i] > 0)) continue;
             const segmentReady = before.ready[i] && p.ready[i] && p.at - before.at < 400;
             if (segmentReady !== ready) continue;
-            ctx.moveTo(x(before.at), y(before.prices[i])); ctx.lineTo(x(p.at), y(before.prices[i])); ctx.lineTo(x(p.at), y(p.prices[i]));
+            ctx.moveTo(x(before.at), yFor(i, before.prices[i])); ctx.lineTo(x(p.at), yFor(i, before.prices[i])); ctx.lineTo(x(p.at), yFor(i, p.prices[i]));
           }
           ctx.stroke();
         }
@@ -223,16 +254,16 @@ function draw() {
         ctx.beginPath(); let previous = null;
         for (const p of points) {
           if (!p.ready[i]) { previous = null; continue; }
-          const xx = x(p.at), yy = y(p[key][i]);
-          if (previous && p.at - previous.at < 400) { ctx.lineTo(xx, y(previous[key][i])); ctx.lineTo(xx, yy); } else ctx.moveTo(xx, yy);
+          const xx = x(p.at), yy = yFor(i, p[key][i]);
+          if (previous && p.at - previous.at < 400) { ctx.lineTo(xx, yFor(i, previous[key][i])); ctx.lineTo(xx, yy); } else ctx.moveTo(xx, yy);
           previous = p;
         }
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
-      if (key === 'moves') for (let j = 1; j < points.length; j++) {
+      if (key === 'moves' && i !== POLYMARKET_INDEX) for (let j = 1; j < points.length; j++) {
         const p = points[j], before = points[j - 1]; if (!p.ready[i]) continue; if (p.up[i] === before.up[i] && p.down[i] === before.down[i]) continue;
-        const xx = x(p.at), yy = y(p.moves[i]); ctx.fillStyle = colors[i]; ctx.beginPath(); ctx.arc(xx, yy, i === WEIGHTED_INDEX ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
+        const xx = x(p.at), yy = yFor(i, p.moves[i]); ctx.fillStyle = colors[i]; ctx.beginPath(); ctx.arc(xx, yy, i === WEIGHTED_INDEX ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
       }
     }
     if (pointer && pointer.canvas === canvas && points.length && pointer.x >= left && pointer.x <= width - right) {
@@ -246,7 +277,7 @@ function draw() {
     $('tooltip').replaceChildren(); const heading = document.createElement('header'); heading.textContent = `${time(inspected.at, true)} UTC · * held price`; $('tooltip').append(heading);
     for (const i of visible) {
       const row = document.createElement('div'); row.className = 'tip-row'; const name = document.createElement('span'), price = document.createElement('span'), move = document.createElement('span');
-      name.textContent = shortNames[i]; name.style.color = colors[i]; price.textContent = inspected.prices[i] > 0 ? priceFormat.format(inspected.prices[i]) + (inspected.ready[i] ? '' : '*') : '—'; move.textContent = inspected.ready[i] ? pct(inspected.moves[i]) : '—'; row.append(name, price, move); $('tooltip').append(row);
+      name.textContent = shortNames[i]; name.style.color = colors[i]; price.textContent = inspected.prices[i] > 0 ? formatPrice(i, inspected.prices[i]) + (inspected.ready[i] ? '' : '*') : '—'; move.textContent = inspected.ready[i] ? pct(inspected.moves[i]) : '—'; row.append(name, price, move); $('tooltip').append(row);
     }
     $('tooltip').style.left = `${Math.max(6, Math.min(innerWidth - $('tooltip').offsetWidth - 8, pointer.screenX + 15))}px`;
     $('tooltip').style.top = `${Math.max(6, Math.min(innerHeight - $('tooltip').offsetHeight - 8, pointer.screenY + 15))}px`;

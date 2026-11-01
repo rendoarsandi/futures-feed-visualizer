@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Monitor, DEFAULT_SETTINGS, SPOT_INDEX, WEIGHTED_INDEX } from '../public/engine.js';
+import { Monitor, DEFAULT_SETTINGS, SPOT_INDEX, POLYMARKET_INDEX, WEIGHTED_INDEX } from '../public/engine.js';
 const START = 1800000000000;
 function wire(venue, price, at, id, overrides = {}) {
   const ms = Math.floor(at);
@@ -11,11 +11,13 @@ function wire(venue, price, at, id, overrides = {}) {
     { channel: 'trades', data: [{ coin: 'BTC', px: String(price), time: ms, tid: String(id) }] },
     { jsonrpc: '2.0', method: 'subscription', params: { channel: 'trades.BTC-PERPETUAL.100ms', data: [{ instrument_name: 'BTC-PERPETUAL', price, timestamp: ms, trade_id: String(id), mark_price: 999999 }] } },
     { feed: 'trade', product_id: 'PF_XBTUSD', price, time: ms, uid: String(id) },
+    { e: 'aggTrade', E: ms, s: 'BTCUSDT', p: String(price), T: ms, a: String(id) },
+    { event_type: 'last_trade_price', asset_id: 'poly-btc-5m-up', price: String(price), timestamp: String(ms), transaction_hash: String(id), side: 'BUY', size: '10' },
   ];
-  return JSON.stringify({ ...messages[venue === SPOT_INDEX ? 0 : venue], ...overrides });
+  return JSON.stringify({ ...messages[venue], ...overrides });
 }
 function send(m, venue, price, at, id) { return m.frame(venue, wire(venue, price, at, id), at); }
-function warm(m, prices = [100, 200, 300, 400, 500, 600, 100]) {
+function warm(m, prices = [100, 200, 300, 400, 500, 600, 100, .5]) {
   prices.forEach((price, i) => { m.connection(i, true); send(m, i, price, START, 1); send(m, i, price, START + 200, 2); });
   m.state(START + 200);
 }
@@ -287,4 +289,40 @@ test('Deribit and Kraken returns can form futures quorum and reconnects require 
   assert.equal(m.state(START + 203).series[WEIGHTED_INDEX].ready, false);
   assert.equal(m.state(START + 403).series[WEIGHTED_INDEX].ready, true);
   assert.throws(() => m.reset({ ...DEFAULT_SETTINGS, weights: [0, 0, 0, 0, 0, 1] }, START + 404), /At least two/);
+});
+
+test('Polymarket 5m tracks executed Up trades visually without simulated buy counts and resets on market rollover', () => {
+  const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+  m.market(POLYMARKET_INDEX, { slug: 'btc-updown-5m-6000000', assetId: 'up-token-1', expiresAt: START + 300000 });
+  m.connection(POLYMARKET_INDEX, true);
+  const weightedBefore = m.state(START + 200).series[WEIGHTED_INDEX];
+  // Ignore book snapshots, price_change events, foreign Down tokens and out-of-range share prices.
+  assert.equal(m.frame(POLYMARKET_INDEX, JSON.stringify([{ event_type: 'book', asset_id: 'up-token-1', bids: [{ price: '0.51', size: '100' }] }]), START + 201), 0);
+  assert.equal(m.frame(POLYMARKET_INDEX, JSON.stringify({ event_type: 'price_change', price_changes: [{ asset_id: 'up-token-1', price: '0.52' }] }), START + 202), 0);
+  assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, .48, START + 203, 'tx-down', { asset_id: 'down-token-1' }), START + 203), 0);
+  assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, 1.05, START + 204, 'tx-bad', { asset_id: 'up-token-1' }), START + 204), 0);
+  assert.equal(m.frame(POLYMARKET_INDEX, 'PONG', START + 205), 0);
+  assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, .5, START + 210, 'tx-1', { asset_id: 'up-token-1' }), START + 210), 1);
+  assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, .55, START + 410, 'tx-2', { asset_id: 'up-token-1' }), START + 410), 1);
+  let state = m.state(START + 410);
+  const poly = state.series[POLYMARKET_INDEX];
+  assert.equal(poly.ready, true);
+  assert.equal(poly.price, .55);
+  close(poly.move, 10);
+  assert.equal(poly.up, 0);
+  assert.equal(poly.down, 0);
+  assert.ok(state.recent.every(e => e.series !== POLYMARKET_INDEX));
+  assert.deepEqual(state.series[WEIGHTED_INDEX], weightedBefore);
+  // Expiry invalidates the expired market and rollover to the next 5m market clears held price and baseline.
+  assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, .99, START + 300000, 'tx-expired', { asset_id: 'up-token-1' }), START + 300000), 0);
+  assert.equal(m.state(START + 300000).series[POLYMARKET_INDEX].ready, false);
+  m.market(POLYMARKET_INDEX, { slug: 'btc-updown-5m-6000300', assetId: 'up-token-2', expiresAt: START + 600000 });
+  m.connection(POLYMARKET_INDEX, true);
+  state = m.state(START + 300001);
+  assert.equal(state.series[POLYMARKET_INDEX].price, 0);
+  assert.equal(state.series[POLYMARKET_INDEX].ready, false);
+  assert.equal(state.series[POLYMARKET_INDEX].slug, 'btc-updown-5m-6000300');
+  assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, .99, START + 300002, 'tx-stale', { asset_id: 'up-token-1' }), START + 300002), 0);
+  assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, .51, START + 300003, 'tx-new-1', { asset_id: 'up-token-2' }), START + 300003), 1);
+  assert.equal(m.state(START + 300003).series[POLYMARKET_INDEX].price, .51);
 });

@@ -1,9 +1,10 @@
 // Port of the executed-trade window, weighted quorum and excursion counters
 // from Poly-Bot 15fe010. Receipt time owns the rolling window; event age is diagnostic.
 export const SPOT_INDEX = 6;
-export const WEIGHTED_INDEX = 7;
-export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'deribit', 'kraken-futures', 'binance-spot', 'weighted'];
-export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Futures', 'Binance Spot', 'Weighted'];
+export const POLYMARKET_INDEX = 7;
+export const WEIGHTED_INDEX = 8;
+export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'deribit', 'kraken-futures', 'binance-spot', 'polymarket-5m', 'weighted'];
+export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Futures', 'Binance Spot', 'Polymarket 5m', 'Weighted'];
 export const DEFAULT_SETTINGS = { lookbackMs: 200, threshold: .01, weights: [1, 1, 1, 1, 1, 1] };
 const DIGITS = /^\d+$/;
 
@@ -49,13 +50,13 @@ function integerID(value) {
 // JSON.parse source text preserves exact numeric aggregate IDs on current browsers.
 // Older engines reject unsafe numeric IDs rather than silently rounding them.
 export function decodeFrame(raw) {
-  if (typeof raw !== 'string' || raw.length > 1024 * 1024 || raw === 'pong') return null;
+  if (typeof raw !== 'string' || raw.length > 1024 * 1024 || raw === 'pong' || raw === 'PONG') return null;
   try {
     return JSON.parse(raw, (key, value, context) => (key === 'a' || key === 'tid') && typeof value === 'number' && context?.source ? context.source : value);
   } catch { return null; }
 }
 
-export function parseTrades(index, frame) {
+export function parseTrades(index, frame, assetId = null) {
   if (!frame || frame.isSnapshot || frame.data?.isSnapshot) return [];
   let trades = [];
   if (index === 0 || index === SPOT_INDEX) {
@@ -73,16 +74,21 @@ export function parseTrades(index, frame) {
   } else if (index === 5 && frame.feed === 'trade' && frame.product_id === 'PF_XBTUSD') {
     // trade_snapshot is historical bootstrap data, never a live execution.
     trades = [{ price: frame.price, eventMS: frame.time, id: typeof frame.uid === 'string' ? frame.uid : null }];
+  } else if (index === POLYMARKET_INDEX) {
+    const events = Array.isArray(frame) ? frame : [frame];
+    trades = events
+      .filter(t => t?.event_type === 'last_trade_price' && typeof t.asset_id === 'string' && t.asset_id && (!assetId || t.asset_id === assetId))
+      .map(t => ({ price: t.price, eventMS: t.timestamp, id: typeof t.transaction_hash === 'string' ? t.transaction_hash : null }));
   }
   return trades;
 }
 
 class TradeFeed {
-  constructor(index) { this.index = index; this.ring = new SampleRing(); this.seen = new Set(); this.keys = new Array(2048); this.session = 0; this.connected = false; this.reset(); }
+  constructor(index) { this.index = index; this.ring = new SampleRing(); this.seen = new Set(); this.keys = new Array(2048); this.session = 0; this.connected = false; this.assetId = null; this.slug = null; this.expiresAt = 0; this.reset(); }
   reset() { this.ring.reset(); this.seen.clear(); this.keys.fill(undefined); this.next = this.latestEventMS = 0; this.lastID = null; this.session++; }
   accept(trade, at) {
     const price = Number(trade.price), eventMS = Number(trade.eventMS), id = trade.id;
-    if (!this.connected || !Number.isFinite(price) || price <= 0 || !Number.isSafeInteger(eventMS) || eventMS <= 0 || typeof id !== 'string' || !id || eventMS < this.latestEventMS) return null;
+    if (!this.connected || (this.expiresAt && at >= this.expiresAt) || !Number.isFinite(price) || price <= 0 || (this.index === POLYMARKET_INDEX && price > 1) || !Number.isSafeInteger(eventMS) || eventMS <= 0 || typeof id !== 'string' || !id || eventMS < this.latestEventMS) return null;
     const key = `${eventMS}:${id}`;
     if (this.seen.has(key)) return null;
     let gap = 0;
@@ -102,7 +108,7 @@ class TradeFeed {
   snapshot(now, lookback) {
     const ring = this.ring;
     const snap = { connected: this.connected, ready: false, price: ring.latestPrice, updatedAt: ring.latestAt, move: 0 };
-    if (!this.connected || !ring.count || now < ring.latestAt) return snap;
+    if (!this.connected || (this.expiresAt && now >= this.expiresAt) || !ring.count || now < ring.latestAt) return snap;
     const baseline = ring.baseline(now - lookback);
     if (!baseline || now - ring.times[ring.head] < lookback) return snap;
     snap.ready = true; snap.baseline = baseline.price; snap.move = (ring.latestPrice - baseline.price) / baseline.price * 100;
@@ -133,13 +139,24 @@ export class Monitor {
     this.counters = IDS.map(() => new Counter()); this.recent = []; this.lastPrices = IDS.map(() => 0); this.lastUpdates = IDS.map(() => 0);
     this.lastLoggedAt = IDS.map(() => -Infinity);
   }
+  market(index, info) {
+    const feed = this.feeds[index];
+    if (!feed) return;
+    const nextSlug = info?.slug || null, nextAsset = info?.assetId || null, nextExpires = Number(info?.expiresAt) || 0;
+    if (feed.slug !== nextSlug || feed.assetId !== nextAsset) {
+      feed.reset();
+      this.lastPrices[index] = 0;
+      this.lastUpdates[index] = 0;
+    }
+    feed.slug = nextSlug; feed.assetId = nextAsset; feed.expiresAt = nextExpires;
+  }
   connection(index, connected) {
     const feed = this.feeds[index];
     if (connected && !this.enabled[index]) return;
     if (connected) feed.reset();
     feed.connected = connected;
     this.counters[index].armed = false;
-    if (index !== SPOT_INDEX) this.counters[WEIGHTED_INDEX].armed = false;
+    if (index < SPOT_INDEX) this.counters[WEIGHTED_INDEX].armed = false;
   }
   setEnabled(index, enabled, at) {
     if (!Number.isInteger(index) || index < 0 || index >= IDS.length || typeof enabled !== 'boolean') throw new Error('Invalid market toggle');
@@ -149,7 +166,8 @@ export class Monitor {
     if (index < this.feeds.length) this.connection(index, false);
   }
   record(index, snap, at, trade) {
-    if (!this.enabled[index]) return;
+    // Polymarket 5m is a visual-only feed without simulated buy counters.
+    if (!this.enabled[index] || index === POLYMARKET_INDEX) return;
     const direction = this.counters[index].evaluate(snap, trade, this.settings.threshold);
     // Space each market independently; counters still evaluate every execution.
     if (direction && at - this.lastLoggedAt[index] >= 1000) {
@@ -163,21 +181,21 @@ export class Monitor {
     const feed = this.feeds[index]; let accepted = 0;
     const frame = decodeFrame(raw);
     if (frame?.success === false || frame?.event === 'error' || frame?.event === 'subscribed_failed' || frame?.event === 'alert' || frame?.error || (frame?.code && String(frame.code) !== '0')) return -1;
-    for (const trade of parseTrades(index, frame)) {
+    for (const trade of parseTrades(index, frame, feed.assetId)) {
       const session = feed.session, result = feed.accept(trade, at);
       if (!result) continue;
       accepted++;
       if (session !== feed.session) {
         this.counters[index].armed = false;
-        if (index !== SPOT_INDEX) this.counters[WEIGHTED_INDEX].armed = false;
+        if (index < SPOT_INDEX) this.counters[WEIGHTED_INDEX].armed = false;
       }
       if (result.gap) {
         this.counters[index].missed += result.gap;
-        if (index !== SPOT_INDEX) this.counters[WEIGHTED_INDEX].missed++;
+        if (index < SPOT_INDEX) this.counters[WEIGHTED_INDEX].missed++;
       }
       this.record(index, feed.snapshot(at, this.settings.lookbackMs), at, true);
-      // Spot has its own counters and cannot trigger or disarm futures signals.
-      if (index !== SPOT_INDEX) this.record(WEIGHTED_INDEX, this.weighted(at), at, true);
+      // Spot and Polymarket 5m cannot trigger or disarm weighted futures signals.
+      if (index < SPOT_INDEX) this.record(WEIGHTED_INDEX, this.weighted(at), at, true);
     }
     return accepted;
   }
@@ -201,10 +219,12 @@ export class Monitor {
   demoSnapshots(at) {
     const seconds = (at - this.startedAt) / 1000;
     const all = this.feeds.map((_, i) => {
-      const enabled = this.enabled[i] && (i === SPOT_INDEX || this.settings.weights[i] > 0);
+      const enabled = this.enabled[i] && (i >= SPOT_INDEX || this.settings.weights[i] > 0);
       const ready = at - Math.max(this.startedAt, this.enabledAt[i]) >= this.settings.lookbackMs;
       const phase = seconds - i * .045;
-      const price = t => 80000 + (i - 1) * 3 + 52 * Math.sin(t * 2 * Math.PI / 5) + 9 * Math.sin(t * 2 * Math.PI / 1.7);
+      const price = i === POLYMARKET_INDEX
+        ? t => .5 + .18 * Math.sin(t * 2 * Math.PI / 5) + .03 * Math.sin(t * 2 * Math.PI / 1.7)
+        : t => 80000 + (i - 1) * 3 + 52 * Math.sin(t * 2 * Math.PI / 5) + 9 * Math.sin(t * 2 * Math.PI / 1.7);
       const p = price(phase), base = price(phase - this.settings.lookbackMs / 1000);
       return { connected: enabled, ready: enabled && ready, price: enabled ? p : 0, move: enabled ? (p - base) / base * 100 : 0, updatedAt: enabled ? at : 0 };
     });
@@ -221,7 +241,13 @@ export class Monitor {
       const c = this.counters[i], ready = snap.ready && snap.connected;
       const status = !this.enabled[i] ? 'disconnected' : i < SPOT_INDEX && this.settings.weights[i] === 0 ? 'off' : ready ? 'ready' : snap.connected ? 'waiting' : 'connecting';
       point.prices.push(this.lastPrices[i]); point.moves.push(snap.move); point.ready.push(ready); point.up.push(c.up); point.down.push(c.down);
-      return { id: IDS[i], name: NAMES[i], enabled: this.enabled[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed };
+      const item = { id: IDS[i], name: NAMES[i], enabled: this.enabled[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed };
+      if (i === POLYMARKET_INDEX) {
+        const windowSec = Math.floor(at / 300000) * 300;
+        item.slug = this.demo ? `btc-updown-5m-${windowSec}` : this.feeds[i].slug;
+        item.expiresAt = this.demo ? (windowSec + 300) * 1000 : this.feeds[i].expiresAt;
+      }
+      return item;
     });
     return { mode: this.demo ? 'demo' : 'live', epoch: this.epoch, at, settings: this.settings, point, series, recent: this.recent.slice() };
   }
