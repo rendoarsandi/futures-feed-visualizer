@@ -69,8 +69,8 @@ export function parseTrades(index, frame, assetId = null) {
     trades = frame.data.filter(t => t?.instId === 'BTC-USDT-SWAP').map(t => ({ price: t.px, eventMS: t.ts, id: typeof t.tradeId === 'string' ? t.tradeId : null }));
   } else if (index === 3 && frame.channel === 'trades' && Array.isArray(frame.data)) {
     trades = frame.data.filter(t => t?.coin === 'BTC').map(t => ({ price: t.px, eventMS: t.time, id: integerID(t.tid) }));
-  } else if (index === 4 && frame.method === 'subscription' && frame.params?.channel === 'trades.BTC-PERPETUAL.100ms' && Array.isArray(frame.params.data)) {
-    trades = frame.params.data.filter(t => t?.instrument_name === 'BTC-PERPETUAL').map(t => ({ price: t.price, eventMS: t.timestamp, id: typeof t.trade_id === 'string' ? t.trade_id : null }));
+  } else if (index === 4 && frame.method === 'subscription' && frame.params?.channel === 'trades.BTC_USDC-PERPETUAL.100ms' && Array.isArray(frame.params.data)) {
+    trades = frame.params.data.filter(t => t?.instrument_name === 'BTC_USDC-PERPETUAL').map(t => ({ price: t.price, eventMS: t.timestamp, id: typeof t.trade_id === 'string' ? t.trade_id : null }));
   } else if (index === 5 && frame.feed === 'trade' && frame.product_id === 'PF_XBTUSD') {
     // trade_snapshot is historical bootstrap data, never a live execution.
     trades = [{ price: frame.price, eventMS: frame.time, id: typeof frame.uid === 'string' ? frame.uid : null }];

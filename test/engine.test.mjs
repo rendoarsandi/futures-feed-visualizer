@@ -9,7 +9,7 @@ function wire(venue, price, at, id, overrides = {}) {
     { topic: 'publicTrade.BTCUSDT', type: 'snapshot', data: [{ s: 'BTCUSDT', S: 'Buy', p: String(price), T: ms, i: String(id) }] },
     { arg: { channel: 'trades', instId: 'BTC-USDT-SWAP' }, data: [{ instId: 'BTC-USDT-SWAP', px: String(price), ts: String(ms), tradeId: String(id) }] },
     { channel: 'trades', data: [{ coin: 'BTC', px: String(price), time: ms, tid: String(id) }] },
-    { jsonrpc: '2.0', method: 'subscription', params: { channel: 'trades.BTC-PERPETUAL.100ms', data: [{ instrument_name: 'BTC-PERPETUAL', price, timestamp: ms, trade_id: String(id), mark_price: 999999 }] } },
+    { jsonrpc: '2.0', method: 'subscription', params: { channel: 'trades.BTC_USDC-PERPETUAL.100ms', data: [{ instrument_name: 'BTC_USDC-PERPETUAL', price, timestamp: ms, trade_id: String(id), mark_price: 999999 }] } },
     { feed: 'trade', product_id: 'PF_XBTUSD', price, time: ms, uid: String(id) },
     { e: 'aggTrade', E: ms, s: 'BTCUSDT', p: String(price), T: ms, a: String(id) },
     { event_type: 'last_trade_price', asset_id: 'poly-btc-5m-up', price: String(price), timestamp: String(ms), transaction_hash: String(id), side: 'BUY', size: '10' },
@@ -260,8 +260,8 @@ test('Deribit batches every execution and Kraken snapshots never seed live histo
   assert.equal(m.frame(5, JSON.stringify({ ...kraken, product_id: 'PF_ETHUSD' }), START), 0);
   assert.equal(m.frame(5, JSON.stringify({ ...kraken, feed: 'ticker' }), START), 0);
   const frame = JSON.parse(wire(4, 100, START, 'first'));
-  assert.equal(m.frame(4, JSON.stringify({ ...frame, params: { ...frame.params, channel: 'ticker.BTC-PERPETUAL.100ms' } }), START), 0);
-  const foreign = { ...frame.params.data[0], instrument_name: 'ETH-PERPETUAL' };
+  assert.equal(m.frame(4, JSON.stringify({ ...frame, params: { ...frame.params, channel: 'ticker.BTC_USDC-PERPETUAL.100ms' } }), START), 0);
+  const foreign = { ...frame.params.data[0], instrument_name: 'BTC-PERPETUAL' };
   assert.equal(m.frame(4, JSON.stringify({ ...frame, params: { ...frame.params, data: [foreign] } }), START), 0);
   assert.equal(m.frame(4, JSON.stringify(frame), START), 1);
   send(m, 4, 100, START + 200, 'second'); m.state(START + 200);

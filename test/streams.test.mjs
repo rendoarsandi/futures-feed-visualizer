@@ -6,7 +6,7 @@ import { StreamConnection } from '../public/streams.js';
 test('delayed heartbeat timers preserve healthy sockets and silent feeds recover', async t => {
   for (const [index, subscription, response, ping] of [
     [1, { op: 'subscribe', args: ['publicTrade.BTCUSDT'] }, '{"op":"pong"}', { op: 'ping' }],
-    [4, { jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['trades.BTC-PERPETUAL.100ms'] } }, '{"jsonrpc":"2.0","id":2,"result":{"version":"1.2.26"}}', { jsonrpc: '2.0', id: 2, method: 'public/test', params: {} }],
+    [4, { jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['trades.BTC_USDC-PERPETUAL.100ms'] } }, '{"jsonrpc":"2.0","id":2,"result":{"version":"1.2.26"}}', { jsonrpc: '2.0', id: 2, method: 'public/test', params: {} }],
     [5, { event: 'subscribe', feed: 'trade', product_ids: ['PF_XBTUSD'] }, '{"feed":"heartbeat","time":1800000000000}', null],
   ]) await t.test(String(index), t => {
     let clock = 0, nextTimer = 0;

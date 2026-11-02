@@ -6,7 +6,7 @@ export const VENUES = [
   { urls: ['wss://ws.okx.com/ws/v5/public', 'wss://wsaws.okx.com/ws/v5/public'], subscribe: { op: 'subscribe', args: [{ channel: 'trades', instId: 'BTC-USDT-SWAP' }] }, ping: 'ping' },
   { urls: ['wss://api.hyperliquid.xyz/ws'], subscribe: { method: 'subscribe', subscription: { type: 'trades', coin: 'BTC' } }, ping: { method: 'ping' } },
   // Deribit's unauthenticated trade tape batches executions every 100 ms.
-  { urls: ['wss://www.deribit.com/ws/api/v2'], subscribe: { jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['trades.BTC-PERPETUAL.100ms'] } }, ping: { jsonrpc: '2.0', id: 2, method: 'public/test', params: {} } },
+  { urls: ['wss://www.deribit.com/ws/api/v2'], subscribe: { jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['trades.BTC_USDC-PERPETUAL.100ms'] } }, ping: { jsonrpc: '2.0', id: 2, method: 'public/test', params: {} } },
   { urls: ['wss://futures.kraken.com/ws/v1', 'wss://www.cryptofacilities.com/ws/v1'], subscribe: { event: 'subscribe', feed: 'trade', product_ids: ['PF_XBTUSD'] }, heartbeat: { event: 'subscribe', feed: 'heartbeat' } },
   { urls: ['wss://stream.binance.com/ws/btcusdt@aggTrade', 'wss://stream.binance.com/stream?streams=btcusdt@aggTrade'] },
   { urls: ['wss://ws-subscriptions-clob.polymarket.com/ws/market'], marketUrl: 'https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-', windowMs: 300000, ping: 'PING' },
