@@ -10,7 +10,7 @@ const expiryLabel = (s, at) => {
   const sec = Math.max(0, Math.ceil((s.expiresAt - at) / 1000));
   return ` · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')} left`;
 };
-let state = null, history = [], hidden = new Set(), frozenAt = null, frozenHistory = null, pointer = null, scheduled = false, recentKey = '';
+let state = null, history = [], hidden = new Set(), frozenAt = null, frozenHistory = null, pointer = null, scheduled = false, recentKey = '', syncLag = true;
 const rows = [], counterRows = [];
 const time = (at, millis = false) => new Date(at).toISOString().slice(11, millis ? 23 : 19);
 const pct = (value, decimals = 4) => `${value > 0 ? '+' : ''}${value.toFixed(decimals)}%`;
@@ -72,7 +72,7 @@ function accept(next) {
     rows[i].button.disabled = Boolean(rows[i].pending);
     rows[i].button.setAttribute('aria-pressed', String(s.enabled));
     rows[i].button.setAttribute('aria-label', `${i === WEIGHTED_INDEX ? s.enabled ? 'Disable' : 'Enable' : s.enabled ? 'Disconnect' : 'Reconnect'} ${names[i]}`);
-    rows[i].status.textContent = s.status + (!s.ready && s.price > 0 ? ' · held' : '') + (i === POLYMARKET_INDEX ? expiryLabel(s, next.at) : '');
+    rows[i].status.textContent = s.status + (!s.ready && s.price > 0 ? ' · held' : '') + (s.connected && s.lag ? ` · ${s.lag}ms` : '') + (i === POLYMARKET_INDEX ? expiryLabel(s, next.at) : '');
     rows[i].price.textContent = s.price > 0 ? formatPrice(i, s.price) : '—';
     rows[i].move.textContent = s.ready ? pct(s.move) : '—';
     rows[i].move.className = s.ready ? (s.move > 0 ? 'positive' : s.move < 0 ? 'negative' : '') : '';
@@ -158,6 +158,7 @@ $('reset').addEventListener('click', () => applySettings(true));
 $('window').addEventListener('change', requestDraw);
 function updatePause() { $('pause').textContent = frozenAt ? 'Resume chart' : 'Pause chart'; $('pause').setAttribute('aria-pressed', String(Boolean(frozenAt))); }
 $('pause').addEventListener('click', () => { frozenAt = frozenAt ? null : state?.at; frozenHistory = frozenAt ? history.slice() : null; updatePause(); requestDraw(); });
+$('sync').addEventListener('click', () => { syncLag = !syncLag; $('sync').setAttribute('aria-pressed', String(syncLag)); requestDraw(); });
 
 function requestDraw() { if (scheduled) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; draw(); }); }
 const plots = [[$('price-chart'), 'prices'], [$('move-chart'), 'moves']];
@@ -177,7 +178,22 @@ function nearest(points, at) {
 function draw() {
   if (!state) return;
   const end = frozenAt || state.at, start = end - Number($('window').value) * 1000;
-  const points = (frozenHistory || history).filter((p) => p.at >= start && p.at <= end);
+  const allHistory = frozenHistory || history;
+  const delays = new Array(names.length).fill(0);
+  if (syncLag) {
+    let maxLag = 0;
+    for (let i = 0; i < WEIGHTED_INDEX; i++) {
+      if (!hidden.has(i) && state.series[i]?.connected) {
+        const lag = Math.min(1000, Math.max(0, state.series[i].lag || 0));
+        if (lag > maxLag) maxLag = lag;
+      }
+    }
+    for (let i = 0; i < names.length; i++) {
+      const lag = Math.min(1000, Math.max(0, state.series[i]?.lag || 0));
+      delays[i] = state.series[i]?.connected ? Math.max(0, maxLag - lag) : 0;
+    }
+  }
+  const points = allHistory.filter((p) => p.at >= start - 1500 && p.at <= end);
   const visible = names.map((_, i) => i).filter((i) => !hidden.has(i));
   const btcVisible = visible.filter((i) => i !== POLYMARKET_INDEX), polyVisible = !hidden.has(POLYMARKET_INDEX);
   let inspected = null;
@@ -188,13 +204,38 @@ function draw() {
     const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
     const left = 82, right = polyVisible ? 58 : 17, top = 10, bottom = 25, plotWidth = width - left - right, plotHeight = height - top - bottom;
     let min = Infinity, max = -Infinity, polyMin = Infinity, polyMax = -Infinity;
-    for (const p of points) for (const i of btcVisible) if ((key === 'prices' ? p.prices[i] > 0 : p.ready[i]) && Number.isFinite(p[key][i])) { min = Math.min(min, p[key][i]); max = Math.max(max, p[key][i]); }
+    for (const p of points) for (const i of btcVisible) {
+      const pAt = p.at + delays[i];
+      if (pAt < start || pAt > end) continue;
+      if ((key === 'prices' ? p.prices[i] > 0 : p.ready[i]) && Number.isFinite(p[key][i])) {
+        min = Math.min(min, p[key][i]); max = Math.max(max, p[key][i]);
+      }
+    }
+    if (!Number.isFinite(min)) {
+      for (const p of points) for (const i of btcVisible) {
+        if ((key === 'prices' ? p.prices[i] > 0 : p.ready[i]) && Number.isFinite(p[key][i])) {
+          min = Math.min(min, p[key][i]); max = Math.max(max, p[key][i]);
+        }
+      }
+    }
     if (key === 'moves') { max = Math.max(Math.abs(min), Math.abs(max), state.settings.threshold * 1.65); if (!Number.isFinite(max)) max = state.settings.threshold * 1.65; min = -max; }
     else if (!Number.isFinite(min)) { min = 79990; max = 80010; }
     else { const pad = Math.max(.4, (max - min) * .1); min -= pad; max += pad; }
     if (polyVisible) {
-      for (const p of points) if ((key === 'prices' ? p.prices[POLYMARKET_INDEX] > 0 : p.ready[POLYMARKET_INDEX]) && Number.isFinite(p[key][POLYMARKET_INDEX])) {
-        polyMin = Math.min(polyMin, p[key][POLYMARKET_INDEX]); polyMax = Math.max(polyMax, p[key][POLYMARKET_INDEX]);
+      const polyDelay = delays[POLYMARKET_INDEX];
+      for (const p of points) {
+        const pAt = p.at + polyDelay;
+        if (pAt < start || pAt > end) continue;
+        if ((key === 'prices' ? p.prices[POLYMARKET_INDEX] > 0 : p.ready[POLYMARKET_INDEX]) && Number.isFinite(p[key][POLYMARKET_INDEX])) {
+          polyMin = Math.min(polyMin, p[key][POLYMARKET_INDEX]); polyMax = Math.max(polyMax, p[key][POLYMARKET_INDEX]);
+        }
+      }
+      if (!Number.isFinite(polyMin)) {
+        for (const p of points) {
+          if ((key === 'prices' ? p.prices[POLYMARKET_INDEX] > 0 : p.ready[POLYMARKET_INDEX]) && Number.isFinite(p[key][POLYMARKET_INDEX])) {
+            polyMin = Math.min(polyMin, p[key][POLYMARKET_INDEX]); polyMax = Math.max(polyMax, p[key][POLYMARKET_INDEX]);
+          }
+        }
       }
       if (key === 'moves') { polyMax = Math.max(Math.abs(polyMin), Math.abs(polyMax), .5); if (!Number.isFinite(polyMax)) polyMax = .5; polyMin = -polyMax; }
       else if (!Number.isFinite(polyMin)) { polyMin = 0; polyMax = 1; }
@@ -236,6 +277,7 @@ function draw() {
     }
     ctx.save(); ctx.beginPath(); ctx.rect(left, top, plotWidth, plotHeight); ctx.clip();
     for (const i of visible) {
+      const delay = delays[i];
       ctx.strokeStyle = colors[i]; ctx.lineWidth = i === WEIGHTED_INDEX ? 2.4 : i === POLYMARKET_INDEX ? 1.8 : 1.2; ctx.globalAlpha = i === WEIGHTED_INDEX || i === POLYMARKET_INDEX ? 1 : .85;
       if (key === 'prices') {
         for (const ready of [false, true]) {
@@ -245,7 +287,16 @@ function draw() {
             if (!(before.prices[i] > 0 && p.prices[i] > 0)) continue;
             const segmentReady = before.ready[i] && p.ready[i] && p.at - before.at < 400;
             if (segmentReady !== ready) continue;
-            ctx.moveTo(x(before.at), yFor(i, before.prices[i])); ctx.lineTo(x(p.at), yFor(i, before.prices[i])); ctx.lineTo(x(p.at), yFor(i, p.prices[i]));
+            const bAt = before.at + delay, pAt = p.at + delay;
+            if (bAt >= end) continue;
+            if (pAt > end) {
+              ctx.moveTo(x(bAt), yFor(i, before.prices[i]));
+              ctx.lineTo(x(end), yFor(i, before.prices[i]));
+              continue;
+            }
+            ctx.moveTo(x(bAt), yFor(i, before.prices[i]));
+            ctx.lineTo(x(pAt), yFor(i, before.prices[i]));
+            ctx.lineTo(x(pAt), yFor(i, p.prices[i]));
           }
           ctx.stroke();
         }
@@ -254,8 +305,19 @@ function draw() {
         ctx.beginPath(); let previous = null;
         for (const p of points) {
           if (!p.ready[i]) { previous = null; continue; }
-          const xx = x(p.at), yy = yFor(i, p[key][i]);
-          if (previous && p.at - previous.at < 400) { ctx.lineTo(xx, yFor(i, previous[key][i])); ctx.lineTo(xx, yy); } else ctx.moveTo(xx, yy);
+          const pAt = p.at + delay;
+          if (pAt > end) {
+            if (previous && p.at - previous.at < 400) {
+              ctx.lineTo(x(end), yFor(i, previous[key][i]));
+            }
+            break;
+          }
+          const xx = x(pAt), yy = yFor(i, p[key][i]);
+          if (previous && p.at - previous.at < 400) {
+            ctx.lineTo(xx, yFor(i, previous[key][i])); ctx.lineTo(xx, yy);
+          } else {
+            ctx.moveTo(xx, yy);
+          }
           previous = p;
         }
         ctx.stroke();
@@ -263,12 +325,15 @@ function draw() {
       ctx.globalAlpha = 1;
       if (key === 'moves' && i !== POLYMARKET_INDEX) for (let j = 1; j < points.length; j++) {
         const p = points[j], before = points[j - 1]; if (!p.ready[i]) continue; if (p.up[i] === before.up[i] && p.down[i] === before.down[i]) continue;
-        const xx = x(p.at), yy = yFor(i, p.moves[i]); ctx.fillStyle = colors[i]; ctx.beginPath(); ctx.arc(xx, yy, i === WEIGHTED_INDEX ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
+        const pAt = p.at + delay; if (pAt > end) continue;
+        const xx = x(pAt), yy = yFor(i, p.moves[i]); ctx.fillStyle = colors[i]; ctx.beginPath(); ctx.arc(xx, yy, i === WEIGHTED_INDEX ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
       }
     }
-    if (pointer && pointer.canvas === canvas && points.length && pointer.x >= left && pointer.x <= width - right) {
-      inspected = nearest(points, start + (pointer.x - left) / plotWidth * (end - start));
-      ctx.strokeStyle = '#a1acba'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x(inspected.at), top); ctx.lineTo(x(inspected.at), height - bottom); ctx.stroke(); ctx.setLineDash([]);
+    if (pointer && pointer.canvas === canvas && allHistory.length && pointer.x >= left && pointer.x <= width - right) {
+      const targetAt = start + (pointer.x - left) / plotWidth * (end - start);
+      inspected = nearest(allHistory, targetAt);
+      const inspectAt = inspected ? inspected.at : targetAt;
+      ctx.strokeStyle = '#a1acba'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x(inspectAt), top); ctx.lineTo(x(inspectAt), height - bottom); ctx.stroke(); ctx.setLineDash([]);
     }
     ctx.restore();
   }
@@ -276,8 +341,9 @@ function draw() {
   if (inspected) {
     $('tooltip').replaceChildren(); const heading = document.createElement('header'); heading.textContent = `${time(inspected.at, true)} UTC · * held price`; $('tooltip').append(heading);
     for (const i of visible) {
+      const p_i = delays[i] && allHistory.length ? nearest(allHistory, inspected.at - delays[i]) : inspected;
       const row = document.createElement('div'); row.className = 'tip-row'; const name = document.createElement('span'), price = document.createElement('span'), move = document.createElement('span');
-      name.textContent = shortNames[i]; name.style.color = colors[i]; price.textContent = inspected.prices[i] > 0 ? formatPrice(i, inspected.prices[i]) + (inspected.ready[i] ? '' : '*') : '—'; move.textContent = inspected.ready[i] ? pct(inspected.moves[i]) : '—'; row.append(name, price, move); $('tooltip').append(row);
+      name.textContent = shortNames[i]; name.style.color = colors[i]; price.textContent = p_i && p_i.prices[i] > 0 ? formatPrice(i, p_i.prices[i]) + (p_i.ready[i] ? '' : '*') : '—'; move.textContent = p_i && p_i.ready[i] ? pct(p_i.moves[i]) : '—'; row.append(name, price, move); $('tooltip').append(row);
     }
     $('tooltip').style.left = `${Math.max(6, Math.min(innerWidth - $('tooltip').offsetWidth - 8, pointer.screenX + 15))}px`;
     $('tooltip').style.top = `${Math.max(6, Math.min(innerHeight - $('tooltip').offsetHeight - 8, pointer.screenY + 15))}px`;

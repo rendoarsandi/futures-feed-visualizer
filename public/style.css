@@ -128,6 +128,14 @@ time {
 .display-controls button {
   white-space:nowrap
 }
+.display-controls button[aria-pressed="true"] {
+  border-color:#527968;
+  background:#223c32;
+  color:#fff
+}
+.display-controls button[aria-pressed="true"]:hover {
+  background:#2a4b3e
+}
 .settings {
   display:flex;
   gap:14px;

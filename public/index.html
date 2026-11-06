@@ -12,7 +12,7 @@
     <div class="identity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 17h4l3-10 4 13 3-10 2 7h4"/></svg><h1>BTC <span>/ Feed comparison</span></h1></div>
     <span id="connection" class="connection" role="status">Connecting to public feeds</span>
     <time id="clock">— UTC</time>
-    <div class="display-controls"><label for="window">Window</label><select id="window"><option value="10">10s</option><option value="30" selected>30s</option><option value="60">60s</option><option value="120">2m</option></select><button id="pause" type="button" aria-pressed="false">Pause chart</button></div>
+    <div class="display-controls"><label for="window">Window</label><select id="window"><option value="10">10s</option><option value="30" selected>30s</option><option value="60">60s</option><option value="120">2m</option></select><button id="sync" type="button" aria-pressed="true" title="Delay faster feeds on the chart to match the slowest active feed's event age">Sync lag</button><button id="pause" type="button" aria-pressed="false">Pause chart</button></div>
   </header>
   <form id="settings" class="settings">
     <label>Signal threshold <span class="input-unit"><input id="threshold" name="threshold" type="number" value="0.01" min="0.000001" max="10" step="any" required><span>%</span></span></label>

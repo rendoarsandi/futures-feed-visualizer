@@ -84,8 +84,8 @@ export function parseTrades(index, frame, assetId = null) {
 }
 
 class TradeFeed {
-  constructor(index) { this.index = index; this.ring = new SampleRing(); this.seen = new Set(); this.keys = new Array(2048); this.session = 0; this.connected = false; this.assetId = null; this.slug = null; this.expiresAt = 0; this.reset(); }
-  reset() { this.ring.reset(); this.seen.clear(); this.keys.fill(undefined); this.next = this.latestEventMS = 0; this.lastID = null; this.session++; }
+  constructor(index) { this.index = index; this.ring = new SampleRing(); this.seen = new Set(); this.keys = new Array(2048); this.session = 0; this.connected = false; this.assetId = null; this.slug = null; this.expiresAt = 0; this.lagMS = 0; this.reset(); }
+  reset() { this.ring.reset(); this.seen.clear(); this.keys.fill(undefined); this.next = this.latestEventMS = 0; this.lastID = null; this.session++; this.lagMS = 0; }
   accept(trade, at) {
     const price = Number(trade.price), eventMS = Number(trade.eventMS), id = trade.id;
     if (!this.connected || (this.expiresAt && at >= this.expiresAt) || !Number.isFinite(price) || price <= 0 || (this.index === POLYMARKET_INDEX && price > 1) || !Number.isSafeInteger(eventMS) || eventMS <= 0 || typeof id !== 'string' || !id || eventMS < this.latestEventMS) return null;
@@ -100,14 +100,16 @@ class TradeFeed {
       if (this.lastID !== null && n - this.lastID > 1n) gap = Number(n - this.lastID - 1n);
       this.lastID = n;
     }
-    if (gap || (this.ring.count && at < this.ring.latestAt)) { this.ring.reset(); this.session++; }
+    if (gap || (this.ring.count && at < this.ring.latestAt)) { this.ring.reset(); this.session++; this.lagMS = 0; }
     this.seen.delete(this.keys[this.next]); this.keys[this.next] = key; this.next = (this.next + 1) % this.keys.length; this.seen.add(key);
     this.latestEventMS = eventMS; this.ring.push(at, price);
+    const rawLag = Math.max(0, Math.min(at - eventMS, 5000));
+    this.lagMS = this.lagMS === 0 ? rawLag : Math.round(this.lagMS * 0.8 + rawLag * 0.2);
     return { gap };
   }
   snapshot(now, lookback) {
     const ring = this.ring;
-    const snap = { connected: this.connected, ready: false, price: ring.latestPrice, updatedAt: ring.latestAt, move: 0 };
+    const snap = { connected: this.connected, ready: false, price: ring.latestPrice, updatedAt: ring.latestAt, move: 0, lag: this.connected ? this.lagMS : 0 };
     if (!this.connected || (this.expiresAt && now >= this.expiresAt) || !ring.count || now < ring.latestAt) return snap;
     const baseline = ring.baseline(now - lookback);
     if (!baseline || now - ring.times[ring.head] < lookback) return snap;
@@ -200,20 +202,21 @@ export class Monitor {
     return accepted;
   }
   weighted(now, snapshots = null) {
-    const s = { ready: false, connected: false, price: 0, move: 0, updatedAt: 0 };
+    const s = { ready: false, connected: false, price: 0, move: 0, updatedAt: 0, lag: 0 };
     if (!this.enabled[WEIGHTED_INDEX]) return s;
-    let total = 0, available = 0, count = 0, connected = 0;
+    let total = 0, available = 0, count = 0, connected = 0, lagWeight = 0;
     this.settings.weights.forEach((w, i) => {
       if (!w) return; total += w;
       const feed = this.feeds[i];
       const part = snapshots ? snapshots[i] : feed.snapshot(now, this.settings.lookbackMs); if (part.connected) connected++;
       if (!part.ready || !part.connected) return;
-      count++; available += w; s.price += w * part.price; s.move += w * part.move;
+      count++; available += w; s.price += w * part.price; s.move += w * part.move; lagWeight += w * (part.lag || 0);
       s.updatedAt = s.updatedAt ? Math.min(s.updatedAt, part.updatedAt) : part.updatedAt;
     });
     s.connected = connected >= 2;
     if (available) { s.price /= available; s.move /= available; }
     s.ready = count >= 2 && total > 0 && available >= total * .5 && Number.isFinite(s.move) && Number.isFinite(s.price);
+    s.lag = s.ready ? Math.round(lagWeight / available) : 0;
     return s;
   }
   demoSnapshots(at) {
@@ -226,22 +229,23 @@ export class Monitor {
         ? t => .5 + .18 * Math.sin(t * 2 * Math.PI / 5) + .03 * Math.sin(t * 2 * Math.PI / 1.7)
         : t => 80000 + (i - 1) * 3 + 52 * Math.sin(t * 2 * Math.PI / 5) + 9 * Math.sin(t * 2 * Math.PI / 1.7);
       const p = price(phase), base = price(phase - this.settings.lookbackMs / 1000);
-      return { connected: enabled, ready: enabled && ready, price: enabled ? p : 0, move: enabled ? (p - base) / base * 100 : 0, updatedAt: enabled ? at : 0 };
+      const lag = enabled ? (i === SPOT_INDEX ? 0 : i === POLYMARKET_INDEX ? 100 : i * 45) : 0;
+      return { connected: enabled, ready: enabled && ready, price: enabled ? p : 0, move: enabled ? (p - base) / base * 100 : 0, updatedAt: enabled ? at : 0, lag };
     });
     all.push(this.weighted(at, all));
     return all;
   }
   state(at) {
     const all = this.demo ? this.demoSnapshots(at) : [...this.feeds.map(f => f.snapshot(at, this.settings.lookbackMs)), this.weighted(at)];
-    const point = { at, prices: [], moves: [], ready: [], up: [], down: [] };
+    const point = { at, prices: [], moves: [], ready: [], up: [], down: [], lags: [] };
     const series = all.map((snap, i) => {
       this.record(i, snap, at, this.demo);
       if (snap.price > 0) this.lastPrices[i] = snap.price;
       if (snap.updatedAt) this.lastUpdates[i] = snap.updatedAt;
       const c = this.counters[i], ready = snap.ready && snap.connected;
       const status = !this.enabled[i] ? 'disconnected' : i < SPOT_INDEX && this.settings.weights[i] === 0 ? 'off' : ready ? 'ready' : snap.connected ? 'waiting' : 'connecting';
-      point.prices.push(this.lastPrices[i]); point.moves.push(snap.move); point.ready.push(ready); point.up.push(c.up); point.down.push(c.down);
-      const item = { id: IDS[i], name: NAMES[i], enabled: this.enabled[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed };
+      point.prices.push(this.lastPrices[i]); point.moves.push(snap.move); point.ready.push(ready); point.up.push(c.up); point.down.push(c.down); point.lags.push(snap.lag || 0);
+      const item = { id: IDS[i], name: NAMES[i], enabled: this.enabled[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed, lag: snap.lag || 0 };
       if (i === POLYMARKET_INDEX) {
         const windowSec = Math.floor(at / 300000) * 300;
         item.slug = this.demo ? `btc-updown-5m-${windowSec}` : this.feeds[i].slug;

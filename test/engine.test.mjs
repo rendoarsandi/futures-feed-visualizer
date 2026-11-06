@@ -326,3 +326,50 @@ test('Polymarket 5m tracks executed Up trades visually without simulated buy cou
   assert.equal(m.frame(POLYMARKET_INDEX, wire(POLYMARKET_INDEX, .51, START + 300003, 'tx-new-1', { asset_id: 'up-token-2' }), START + 300003), 1);
   assert.equal(m.state(START + 300003).series[POLYMARKET_INDEX].price, .51);
 });
+
+test('diagnostic lag tracks event age, contributes to weighted lag and resets on forward gap or reconnect', () => {
+  const m = new Monitor({ ...DEFAULT_SETTINGS, weights: [1, 1, 0, 0, 0, 0] }, START);
+  m.connection(0, true);
+  m.connection(1, true);
+
+  m.frame(0, wire(0, 100, START + 100, 1, { T: START + 50 }), START + 100);
+  let state = m.state(START + 100);
+  assert.equal(state.series[0].lag, 50);
+  assert.equal(state.point.lags[0], 50);
+
+  m.frame(0, wire(0, 100, START + 300, 2, { T: START + 200 }), START + 300);
+  state = m.state(START + 300);
+  assert.equal(state.series[0].lag, 60);
+  assert.equal(state.point.lags[0], 60);
+
+  m.frame(1, wire(1, 200, START + 100, 'b1', { data: [{ s: 'BTCUSDT', S: 'Buy', p: '200', T: START, i: 'b1' }] }), START + 100);
+  m.frame(1, wire(1, 200, START + 300, 'b2', { data: [{ s: 'BTCUSDT', S: 'Buy', p: '200', T: START + 200, i: 'b2' }] }), START + 300);
+  state = m.state(START + 300);
+  assert.equal(state.series[1].lag, 100);
+
+  assert.equal(state.series[WEIGHTED_INDEX].ready, true);
+  assert.equal(state.series[WEIGHTED_INDEX].lag, 80);
+  assert.equal(state.point.lags[WEIGHTED_INDEX], 80);
+
+  m.frame(0, wire(0, 100, START + 350, 4, { T: START + 320 }), START + 350);
+  state = m.state(START + 350);
+  assert.equal(state.series[0].lag, 30);
+  assert.equal(state.series[0].missed, 1);
+
+  m.connection(0, false);
+  state = m.state(START + 360);
+  assert.equal(state.series[0].connected, false);
+  assert.equal(state.series[0].lag, 0);
+
+  m.connection(0, true);
+  state = m.state(START + 360);
+  assert.equal(state.series[0].lag, 0);
+
+  const demo = new Monitor(DEFAULT_SETTINGS, START, true);
+  const demoState = demo.state(START + 500);
+  assert.equal(demoState.series[0].lag, 0);
+  assert.equal(demoState.series[1].lag, 45);
+  assert.equal(demoState.series[SPOT_INDEX].lag, 0);
+  assert.equal(demoState.series[POLYMARKET_INDEX].lag, 100);
+  assert.equal(demoState.series[WEIGHTED_INDEX].lag, 113);
+});
