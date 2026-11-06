@@ -11,6 +11,9 @@ const expiryLabel = (s, at) => {
   return ` · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')} left`;
 };
 let state = null, history = [], hidden = new Set(), frozenAt = null, frozenHistory = null, pointer = null, scheduled = false, recentKey = '', syncLag = true;
+const smoothLags = new Float64Array(names.length);
+const visualDelays = new Float64Array(names.length);
+const pointAt = (p, i) => syncLag ? (p.syncAt ? p.syncAt[i] : p.at + visualDelays[i]) : p.at;
 const rows = [], counterRows = [];
 const time = (at, millis = false) => new Date(at).toISOString().slice(11, millis ? 23 : 19);
 const pct = (value, decimals = 4) => `${value > 0 ? '+' : ''}${value.toFixed(decimals)}%`;
@@ -45,17 +48,105 @@ function configureInputs(settings) {
   settings.weights.forEach((w, i) => { $(`weight-${i}`).value = w; });
 }
 
+function renderRecent() {
+  if (!state) return;
+  const now = frozenAt || state.at;
+  const visible = [];
+  for (const event of state.recent) {
+    const delay = syncLag ? (visualDelays[event.series] || 0) : 0;
+    const displayAt = Math.round(event.at + delay);
+    if (displayAt <= now) {
+      visible.push({ ...event, displayAt });
+    }
+  }
+  visible.sort((a, b) => a.displayAt - b.displayAt || a.at - b.at);
+  const latest = visible.slice(-10).reverse();
+  const key = `${syncLag ? 's' : 'u'}:` + latest.map(e => `${e.series}:${e.displayAt}:${e.direction}:${e.move}`).join('|');
+  if (key === recentKey) return;
+  recentKey = key;
+  $('recent').replaceChildren();
+  for (const event of latest) {
+    const li = document.createElement('li'), stamp = document.createElement('time'), name = document.createElement('span'), direction = document.createElement('span'), move = document.createElement('span');
+    stamp.textContent = time(event.displayAt, true); name.textContent = shortNames[event.series]; name.style.color = colors[event.series];
+    direction.textContent = event.direction > 0 ? 'UP' : 'DOWN'; direction.className = event.direction > 0 ? 'positive' : 'negative';
+    move.textContent = pct(event.move, 3); move.className = 'move'; li.append(stamp, name, direction, move); $('recent').append(li);
+  }
+  if (!latest.length) { const li = document.createElement('li'); li.className = 'hint'; li.textContent = 'Waiting for a threshold crossing'; $('recent').append(li); }
+}
+
 function accept(next) {
   if (!next.series || !next.settings) return;
   if (state && next.epoch < state.epoch && !next.history) return;
   const newSession = !state || state.epoch !== next.epoch;
-  if (newSession) { history = []; configureInputs(next.settings); frozenAt = null; frozenHistory = null; updatePause(); recentKey = ''; }
-  if (next.history) history = next.history;
-  if (next.point && (!history.length || next.point.at > history.at(-1).at)) history.push(next.point);
-  if (history.length > 2600) history.splice(0, history.length - 2600);
+  if (newSession) {
+    history = []; configureInputs(next.settings); frozenAt = null; frozenHistory = null; updatePause(); recentKey = '';
+    smoothLags.fill(0); visualDelays.fill(0);
+  }
   const visibilityChanged = next.series.some((s, i) => hidden.has(i) === s.enabled);
   state = next;
   hidden = new Set(next.series.flatMap((s, i) => s.enabled ? [] : [i]));
+
+  for (let i = 0; i < names.length; i++) {
+    const s = next.series[i];
+    if (!s?.connected) {
+      smoothLags[i] = 0;
+    } else {
+      const rawLag = Math.min(1000, Math.max(0, s.lag || 0));
+      smoothLags[i] = smoothLags[i] === 0 ? rawLag : smoothLags[i] * 0.95 + rawLag * 0.05;
+    }
+  }
+  let targetMaxLag = 0;
+  for (let i = 0; i < WEIGHTED_INDEX; i++) {
+    if (!hidden.has(i) && next.series[i]?.connected) {
+      if (smoothLags[i] > targetMaxLag) targetMaxLag = smoothLags[i];
+    }
+  }
+  for (let i = 0; i < names.length; i++) {
+    const s = next.series[i];
+    if (!s?.connected) {
+      visualDelays[i] = 0;
+    } else {
+      const targetDelay = Math.max(0, targetMaxLag - smoothLags[i]);
+      if (visualDelays[i] === 0 || Math.abs(visualDelays[i] - targetDelay) > 50) {
+        visualDelays[i] = targetDelay;
+      } else {
+        const diff = targetDelay - visualDelays[i];
+        if (Math.abs(diff) >= 2) {
+          visualDelays[i] += Math.sign(diff) * Math.min(Math.abs(diff) * 0.08, 1.5);
+        }
+      }
+    }
+  }
+
+  if (next.history) {
+    history = next.history;
+    for (let j = 0; j < history.length; j++) {
+      const p = history[j];
+      if (!p.syncAt) {
+        p.syncAt = new Float64Array(names.length);
+        const prev = j > 0 ? history[j - 1].syncAt : null;
+        for (let i = 0; i < names.length; i++) {
+          const delay = visualDelays[i];
+          p.syncAt[i] = prev ? Math.max(prev[i] + 0.1, p.at + delay) : (p.at + delay);
+        }
+      }
+    }
+  }
+  if (next.point && (!history.length || next.point.at > history.at(-1).at)) {
+    const p = next.point;
+    const prevPoint = history.length ? history.at(-1) : null;
+    const isContiguous = prevPoint && (p.at - prevPoint.at < 1000);
+    p.syncAt = new Float64Array(names.length);
+    for (let i = 0; i < names.length; i++) {
+      const delay = visualDelays[i];
+      const prevSync = (isContiguous && prevPoint.syncAt) ? prevPoint.syncAt[i] : null;
+      p.syncAt[i] = (prevSync !== null && prevSync > 0)
+        ? Math.max(prevSync + 0.1, p.at + delay)
+        : (p.at + delay);
+    }
+    history.push(p);
+  }
+  if (history.length > 2600) history.splice(0, history.length - 2600);
   $('clock').textContent = `${time(next.at)} UTC`;
   $('mode').textContent = next.mode === 'demo' ? 'DEMO · SYNTHETIC' : 'PUBLIC FUTURES + SPOT + POLYMARKET 5M';
   $('mode').classList.toggle('demo', next.mode === 'demo');
@@ -82,17 +173,7 @@ function accept(next) {
       counterRows[i].total.textContent = countFormat.format(s.up + s.down);
     }
   });
-  const key = JSON.stringify(next.recent.slice(-10));
-  if (key !== recentKey) {
-    recentKey = key; $('recent').replaceChildren();
-    for (const event of next.recent.slice(-10).reverse()) {
-      const li = document.createElement('li'), stamp = document.createElement('time'), name = document.createElement('span'), direction = document.createElement('span'), move = document.createElement('span');
-      stamp.textContent = time(event.at, true); name.textContent = shortNames[event.series]; name.style.color = colors[event.series];
-      direction.textContent = event.direction > 0 ? 'UP' : 'DOWN'; direction.className = event.direction > 0 ? 'positive' : 'negative';
-      move.textContent = pct(event.move, 3); move.className = 'move'; li.append(stamp, name, direction, move); $('recent').append(li);
-    }
-    if (!next.recent.length) { const li = document.createElement('li'); li.className = 'hint'; li.textContent = 'Waiting for a threshold crossing'; $('recent').append(li); }
-  }
+  renderRecent();
   $('empty').hidden = history.some((p) => p.prices.some((value) => value > 0));
   const seconds = Math.max(0, Math.floor((next.at - next.point.at + (history.length ? next.point.at - history[0].at : 0)) / 1000));
   $('session').textContent = `${seconds}s chart history · counts since reset`;
@@ -157,8 +238,8 @@ $('settings').addEventListener('submit', (event) => { event.preventDefault(); ap
 $('reset').addEventListener('click', () => applySettings(true));
 $('window').addEventListener('change', requestDraw);
 function updatePause() { $('pause').textContent = frozenAt ? 'Resume chart' : 'Pause chart'; $('pause').setAttribute('aria-pressed', String(Boolean(frozenAt))); }
-$('pause').addEventListener('click', () => { frozenAt = frozenAt ? null : state?.at; frozenHistory = frozenAt ? history.slice() : null; updatePause(); requestDraw(); });
-$('sync').addEventListener('click', () => { syncLag = !syncLag; $('sync').setAttribute('aria-pressed', String(syncLag)); requestDraw(); });
+$('pause').addEventListener('click', () => { frozenAt = frozenAt ? null : state?.at; frozenHistory = frozenAt ? history.slice() : null; updatePause(); renderRecent(); requestDraw(); });
+$('sync').addEventListener('click', () => { syncLag = !syncLag; $('sync').setAttribute('aria-pressed', String(syncLag)); renderRecent(); requestDraw(); });
 
 function requestDraw() { if (scheduled) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; draw(); }); }
 const plots = [[$('price-chart'), 'prices'], [$('move-chart'), 'moves']];
@@ -179,21 +260,8 @@ function draw() {
   if (!state) return;
   const end = frozenAt || state.at, start = end - Number($('window').value) * 1000;
   const allHistory = frozenHistory || history;
-  const delays = new Array(names.length).fill(0);
-  if (syncLag) {
-    let maxLag = 0;
-    for (let i = 0; i < WEIGHTED_INDEX; i++) {
-      if (!hidden.has(i) && state.series[i]?.connected) {
-        const lag = Math.min(1000, Math.max(0, state.series[i].lag || 0));
-        if (lag > maxLag) maxLag = lag;
-      }
-    }
-    for (let i = 0; i < names.length; i++) {
-      const lag = Math.min(1000, Math.max(0, state.series[i]?.lag || 0));
-      delays[i] = state.series[i]?.connected ? Math.max(0, maxLag - lag) : 0;
-    }
-  }
-  const points = allHistory.filter((p) => p.at >= start - 1500 && p.at <= end);
+  const delays = syncLag ? visualDelays : new Float64Array(names.length);
+  const points = allHistory.filter((p) => p.at >= start - 2500 && p.at <= end + 500);
   const visible = names.map((_, i) => i).filter((i) => !hidden.has(i));
   const btcVisible = visible.filter((i) => i !== POLYMARKET_INDEX), polyVisible = !hidden.has(POLYMARKET_INDEX);
   let inspected = null;
@@ -205,7 +273,7 @@ function draw() {
     const left = 82, right = polyVisible ? 58 : 17, top = 10, bottom = 25, plotWidth = width - left - right, plotHeight = height - top - bottom;
     let min = Infinity, max = -Infinity, polyMin = Infinity, polyMax = -Infinity;
     for (const p of points) for (const i of btcVisible) {
-      const pAt = p.at + delays[i];
+      const pAt = pointAt(p, i);
       if (pAt < start || pAt > end) continue;
       if ((key === 'prices' ? p.prices[i] > 0 : p.ready[i]) && Number.isFinite(p[key][i])) {
         min = Math.min(min, p[key][i]); max = Math.max(max, p[key][i]);
@@ -222,9 +290,8 @@ function draw() {
     else if (!Number.isFinite(min)) { min = 79990; max = 80010; }
     else { const pad = Math.max(.4, (max - min) * .1); min -= pad; max += pad; }
     if (polyVisible) {
-      const polyDelay = delays[POLYMARKET_INDEX];
       for (const p of points) {
-        const pAt = p.at + polyDelay;
+        const pAt = pointAt(p, POLYMARKET_INDEX);
         if (pAt < start || pAt > end) continue;
         if ((key === 'prices' ? p.prices[POLYMARKET_INDEX] > 0 : p.ready[POLYMARKET_INDEX]) && Number.isFinite(p[key][POLYMARKET_INDEX])) {
           polyMin = Math.min(polyMin, p[key][POLYMARKET_INDEX]); polyMax = Math.max(polyMax, p[key][POLYMARKET_INDEX]);
@@ -277,38 +344,45 @@ function draw() {
     }
     ctx.save(); ctx.beginPath(); ctx.rect(left, top, plotWidth, plotHeight); ctx.clip();
     for (const i of visible) {
-      const delay = delays[i];
       ctx.strokeStyle = colors[i]; ctx.lineWidth = i === WEIGHTED_INDEX ? 2.4 : i === POLYMARKET_INDEX ? 1.8 : 1.2; ctx.globalAlpha = i === WEIGHTED_INDEX || i === POLYMARKET_INDEX ? 1 : .85;
       if (key === 'prices') {
         for (const ready of [false, true]) {
           ctx.setLineDash(ready ? [] : [4, 4]); ctx.globalAlpha = ready ? 1 : .62; ctx.beginPath();
+          let lastDrawnAt = -Infinity, lastDrawnPrice = 0;
           for (let j = 1; j < points.length; j++) {
             const before = points[j - 1], p = points[j];
             if (!(before.prices[i] > 0 && p.prices[i] > 0)) continue;
             const segmentReady = before.ready[i] && p.ready[i] && p.at - before.at < 400;
             if (segmentReady !== ready) continue;
-            const bAt = before.at + delay, pAt = p.at + delay;
+            const bAt = pointAt(before, i), pAt = pointAt(p, i);
             if (bAt >= end) continue;
             if (pAt > end) {
               ctx.moveTo(x(bAt), yFor(i, before.prices[i]));
               ctx.lineTo(x(end), yFor(i, before.prices[i]));
+              lastDrawnAt = end; lastDrawnPrice = before.prices[i];
               continue;
             }
             ctx.moveTo(x(bAt), yFor(i, before.prices[i]));
             ctx.lineTo(x(pAt), yFor(i, before.prices[i]));
             ctx.lineTo(x(pAt), yFor(i, p.prices[i]));
+            lastDrawnAt = pAt; lastDrawnPrice = p.prices[i];
+          }
+          if (lastDrawnAt > -Infinity && lastDrawnAt < end && end - lastDrawnAt < 400) {
+            ctx.moveTo(x(lastDrawnAt), yFor(i, lastDrawnPrice));
+            ctx.lineTo(x(end), yFor(i, lastDrawnPrice));
           }
           ctx.stroke();
         }
         ctx.setLineDash([]);
       } else {
-        ctx.beginPath(); let previous = null;
+        ctx.beginPath(); let previous = null, lastDrawnAt = -Infinity, lastDrawnMove = 0;
         for (const p of points) {
           if (!p.ready[i]) { previous = null; continue; }
-          const pAt = p.at + delay;
+          const pAt = pointAt(p, i);
           if (pAt > end) {
             if (previous && p.at - previous.at < 400) {
               ctx.lineTo(x(end), yFor(i, previous[key][i]));
+              lastDrawnAt = end;
             }
             break;
           }
@@ -319,13 +393,18 @@ function draw() {
             ctx.moveTo(xx, yy);
           }
           previous = p;
+          lastDrawnAt = pAt;
+          lastDrawnMove = p[key][i];
+        }
+        if (lastDrawnAt > -Infinity && lastDrawnAt < end && end - lastDrawnAt < 400) {
+          ctx.lineTo(x(end), yFor(i, lastDrawnMove));
         }
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
       if (key === 'moves' && i !== POLYMARKET_INDEX) for (let j = 1; j < points.length; j++) {
         const p = points[j], before = points[j - 1]; if (!p.ready[i]) continue; if (p.up[i] === before.up[i] && p.down[i] === before.down[i]) continue;
-        const pAt = p.at + delay; if (pAt > end) continue;
+        const pAt = pointAt(p, i); if (pAt > end) continue;
         const xx = x(pAt), yy = yFor(i, p.moves[i]); ctx.fillStyle = colors[i]; ctx.beginPath(); ctx.arc(xx, yy, i === WEIGHTED_INDEX ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
       }
     }
@@ -341,7 +420,8 @@ function draw() {
   if (inspected) {
     $('tooltip').replaceChildren(); const heading = document.createElement('header'); heading.textContent = `${time(inspected.at, true)} UTC · * held price`; $('tooltip').append(heading);
     for (const i of visible) {
-      const p_i = delays[i] && allHistory.length ? nearest(allHistory, inspected.at - delays[i]) : inspected;
+      const delay = delays[i];
+      const p_i = delay && allHistory.length ? nearest(allHistory, inspected.at - delay) : inspected;
       const row = document.createElement('div'); row.className = 'tip-row'; const name = document.createElement('span'), price = document.createElement('span'), move = document.createElement('span');
       name.textContent = shortNames[i]; name.style.color = colors[i]; price.textContent = p_i && p_i.prices[i] > 0 ? formatPrice(i, p_i.prices[i]) + (p_i.ready[i] ? '' : '*') : '—'; move.textContent = p_i && p_i.ready[i] ? pct(p_i.moves[i]) : '—'; row.append(name, price, move); $('tooltip').append(row);
     }
