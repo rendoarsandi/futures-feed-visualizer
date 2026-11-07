@@ -10,6 +10,7 @@ export const VENUES = [
   { urls: ['wss://futures.kraken.com/ws/v1', 'wss://www.cryptofacilities.com/ws/v1'], subscribe: { event: 'subscribe', feed: 'trade', product_ids: ['PF_XBTUSD'] }, heartbeat: { event: 'subscribe', feed: 'heartbeat' } },
   { urls: ['wss://stream.binance.com/ws/btcusdt@aggTrade', 'wss://stream.binance.com/stream?streams=btcusdt@aggTrade'] },
   { urls: ['wss://ws-subscriptions-clob.polymarket.com/ws/market'], marketUrl: 'https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-', windowMs: 300000, subscribeMarket: assetId => ({ type: 'market', assets_ids: [assetId] }), ping: 'PING' },
+  { urls: ['wss://ws-subscriptions-clob.polymarket.com/ws/market'], marketUrl: 'https://gamma-api.polymarket.com/markets?slug=btc-updown-15m-', windowMs: 900000, subscribeMarket: assetId => ({ type: 'market', assets_ids: [assetId] }), ping: 'PING' },
   { urls: ['wss://ws.predict.fun/ws'], marketUrl: typeof location === 'object' && /^https?:$/.test(location.protocol) ? '/predict-market/btc-updown-5m-' : 'https://predict.fun/market/btc-updown-5m-', windowMs: 300000, subscribeMarket: assetId => ({ method: 'subscribe', requestId: 1, params: [`predictOrderbook/${assetId}`] }), echoHeartbeat: true },
 ];
 
@@ -56,11 +57,12 @@ export class StreamConnection {
     const upIndex = Array.isArray(outcomes) ? outcomes.findIndex(o => String(o).toLowerCase() === 'up') : -1;
     const assetId = Array.isArray(tokens) ? tokens[upIndex >= 0 ? upIndex : 0] : null;
     if (typeof assetId !== 'string' || !assetId || market?.closed === true || market?.acceptingOrders === false) {
-      throw new Error('Polymarket 5m market unavailable');
+      throw new Error(venue.marketUrl.includes('15m') ? 'Polymarket 15m market unavailable' : 'Polymarket 5m market unavailable');
     }
     const endMs = Date.parse(market.endDate);
     const expiresAt = Number.isFinite(endMs) && endMs > at ? endMs : fallbackExpiresAt;
-    return { slug: market.slug || `btc-updown-5m-${windowSec}`, assetId, expiresAt };
+    const prefix = venue.marketUrl.includes('15m') ? 'btc-updown-15m-' : 'btc-updown-5m-';
+    return { slug: market.slug || `${prefix}${windowSec}`, assetId, expiresAt };
   }
   connect() {
     if (this.stopped) return;
