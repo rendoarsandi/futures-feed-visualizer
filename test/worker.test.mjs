@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
-import { SPOT_INDEX, POLYMARKET_INDEX, WEIGHTED_INDEX } from '../public/engine.js';
+import { SPOT_INDEX, POLYMARKET_INDEX, PREDICTFUN_INDEX, WEIGHTED_INDEX } from '../public/engine.js';
 const moduleURL = new URL('../public/feed-worker.js', import.meta.url).href;
 
 test('actual worker publishes an offline session, applies settings atomically and bounds pending chart messages', { timeout: 10000 }, async t => {
@@ -62,18 +62,21 @@ test('live worker disconnects crossed-out markets, preserves toggles through set
     };
     globalThis.postMessage = data => parentPort.postMessage(data);
     globalThis.fetch = async url => {
-      const slug = String(url).split('slug=')[1] || 'btc-updown-5m-1800000000';
+      const slug = String(url).split('slug=')[1] || String(url).split('/market/')[1] || 'btc-updown-5m-1800000000';
       const windowSec = Number(slug.split('-').at(-1)) || 1800000000;
+      const body = [{
+        id: 4304695,
+        slug,
+        outcomes: '["Up", "Down"]',
+        clobTokenIds: JSON.stringify(['up-' + windowSec, 'down-' + windowSec]),
+        endDate: new Date((windowSec + 300) * 1000).toISOString(),
+        acceptingOrders: true,
+        closed: false,
+      }];
       return {
         ok: true,
-        json: async () => [{
-          slug,
-          outcomes: '["Up", "Down"]',
-          clobTokenIds: JSON.stringify(['up-' + windowSec, 'down-' + windowSec]),
-          endDate: new Date((windowSec + 300) * 1000).toISOString(),
-          acceptingOrders: true,
-          closed: false,
-        }],
+        json: async () => body,
+        text: async () => JSON.stringify(body[0]),
       };
     };
     globalThis.WebSocket = class {
@@ -107,9 +110,10 @@ test('live worker disconnects crossed-out markets, preserves toggles through set
   let wait = next('state'); worker.postMessage({ type: 'start' }); await wait;
   const inspect = () => { const wait = next('sockets'); worker.postMessage({ type: 'inspect' }); return wait; };
   let sockets = (await inspect()).sockets;
-  assert.equal(sockets.filter(s => !s.closed).length, 8);
+  assert.equal(sockets.filter(s => !s.closed).length, 9);
   assert.ok(sockets.some(s => new URL(s.url).hostname === 'stream.binance.com' && !s.closed));
   assert.ok(sockets.some(s => new URL(s.url).hostname === 'ws-subscriptions-clob.polymarket.com' && !s.closed));
+  assert.ok(sockets.some(s => new URL(s.url).hostname === 'ws.predict.fun' && !s.closed));
   let backgroundStates = 0;
   const count = data => { if (data.type === 'state') backgroundStates++; };
   worker.on('message', count);
@@ -130,7 +134,7 @@ test('live worker disconnects crossed-out markets, preserves toggles through set
   assert.equal(resumed.series[0].up, 1); // Hidden, unacknowledged UI does not block execution counting.
   assert.equal(resumed.series[0].price, 100.02);
   sockets = (await inspect()).sockets;
-  assert.equal(sockets.filter(s => !s.closed).length, 8);
+  assert.equal(sockets.filter(s => !s.closed).length, 9);
   assert.equal(sockets.filter(s => new URL(s.url).hostname === 'fstream.binance.com').length, 1);
   assert.equal(sockets.filter(s => new URL(s.url).hostname === 'stream.bybit.com').length, 2);
   const connectedSockets = sockets.length;
@@ -144,27 +148,31 @@ test('live worker disconnects crossed-out markets, preserves toggles through set
   assert.equal(state.series[SPOT_INDEX].status, 'disconnected');
   sockets = (await inspect()).sockets;
   assert.equal(sockets.length, connectedSockets); // Toggling one market does not replace the others.
-  assert.equal(sockets.filter(s => !s.closed).length, 7);
+  assert.equal(sockets.filter(s => !s.closed).length, 8);
   assert.ok(sockets.filter(s => new URL(s.url).hostname === 'stream.binance.com').every(s => s.closed));
   state = await control('settings', { settings: { lookbackMs: 200, threshold: .01, weights: [0, 0, 0, 0, 1, 1] } });
   assert.equal(state.series[SPOT_INDEX].enabled, false);
   sockets = (await inspect()).sockets;
-  assert.ok(sockets.slice(0, 8).every(s => s.closed));
+  assert.ok(sockets.slice(0, 9).every(s => s.closed));
   let active = sockets.filter(s => !s.closed);
-  assert.equal(active.length, 3);
-  assert.deepEqual(active.map(s => new URL(s.url).hostname).sort(), ['futures.kraken.com', 'ws-subscriptions-clob.polymarket.com', 'www.deribit.com']);
+  assert.equal(active.length, 4);
+  assert.deepEqual(active.map(s => new URL(s.url).hostname).sort(), ['futures.kraken.com', 'ws-subscriptions-clob.polymarket.com', 'ws.predict.fun', 'www.deribit.com']);
   await control('settings', { settings: { lookbackMs: 300, threshold: .01, weights: [0, 0, 0, 0, 1, 1] } });
   assert.deepEqual((await inspect()).sockets, sockets); // Resetting parameters cannot reopen a disabled feed.
   await control('market', { index: SPOT_INDEX, enabled: true });
   sockets = (await inspect()).sockets;
   active = sockets.filter(s => !s.closed);
-  assert.equal(active.length, 4);
+  assert.equal(active.length, 5);
   assert.ok(active.some(s => new URL(s.url).hostname === 'stream.binance.com'));
   assert.ok(active.every(s => !['fstream.binance.com', 'stream.bybit.com'].includes(new URL(s.url).hostname)));
   state = await control('market', { index: POLYMARKET_INDEX, enabled: false });
   assert.equal(state.series[POLYMARKET_INDEX].status, 'disconnected');
   sockets = (await inspect()).sockets;
   assert.ok(sockets.filter(s => new URL(s.url).hostname === 'ws-subscriptions-clob.polymarket.com').every(s => s.closed));
+  state = await control('market', { index: PREDICTFUN_INDEX, enabled: false });
+  assert.equal(state.series[PREDICTFUN_INDEX].status, 'disconnected');
+  sockets = (await inspect()).sockets;
+  assert.ok(sockets.filter(s => new URL(s.url).hostname === 'ws.predict.fun').every(s => s.closed));
   state = await control('market', { index: WEIGHTED_INDEX, enabled: false });
   assert.equal(state.series[WEIGHTED_INDEX].status, 'disconnected');
   assert.deepEqual((await inspect()).sockets, sockets); // Weighted has no socket of its own.

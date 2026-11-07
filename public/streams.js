@@ -9,7 +9,8 @@ export const VENUES = [
   { urls: ['wss://www.deribit.com/ws/api/v2'], subscribe: { jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['trades.BTC_USDC-PERPETUAL.100ms'] } }, ping: { jsonrpc: '2.0', id: 2, method: 'public/test', params: {} } },
   { urls: ['wss://futures.kraken.com/ws/v1', 'wss://www.cryptofacilities.com/ws/v1'], subscribe: { event: 'subscribe', feed: 'trade', product_ids: ['PF_XBTUSD'] }, heartbeat: { event: 'subscribe', feed: 'heartbeat' } },
   { urls: ['wss://stream.binance.com/ws/btcusdt@aggTrade', 'wss://stream.binance.com/stream?streams=btcusdt@aggTrade'] },
-  { urls: ['wss://ws-subscriptions-clob.polymarket.com/ws/market'], marketUrl: 'https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-', windowMs: 300000, ping: 'PING' },
+  { urls: ['wss://ws-subscriptions-clob.polymarket.com/ws/market'], marketUrl: 'https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-', windowMs: 300000, subscribeMarket: assetId => ({ type: 'market', assets_ids: [assetId] }), ping: 'PING' },
+  { urls: ['wss://ws.predict.fun/ws'], marketUrl: typeof location === 'object' && /^https?:$/.test(location.protocol) ? '/predict-market/btc-updown-5m-' : 'https://predict.fun/market/btc-updown-5m-', windowMs: 300000, subscribeMarket: assetId => ({ method: 'subscribe', requestId: 1, params: [`predictOrderbook/${assetId}`] }), echoHeartbeat: true },
 ];
 
 // Browser-native WebSockets answer Binance control PING frames automatically.
@@ -25,6 +26,29 @@ export class StreamConnection {
     const fallbackExpiresAt = (windowSec + venue.windowMs / 1000) * 1000;
     const response = await fetch(`${venue.marketUrl}${windowSec}`, { signal: this.controller.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (venue.echoHeartbeat) {
+      const raw = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
+      let slug = `btc-updown-5m-${windowSec}`, assetId = null, endDate = null, open = true;
+      if (raw.trim().startsWith('{')) {
+        const body = JSON.parse(raw), cat = body?.data || body;
+        const market = Array.isArray(cat?.markets) ? cat.markets[0] : cat;
+        slug = cat?.slug || market?.categorySlug || slug;
+        assetId = market?.id != null ? String(market.id) : null;
+        endDate = cat?.endsAt || market?.boostEndsAt || market?.endDate;
+        open = cat?.status !== 'RESOLVED' && market?.status !== 'RESOLVED' && market?.tradingStatus !== 'CLOSED' && market?.isTradingEnabled !== false && market?.closed !== true;
+      } else {
+        slug = raw.match(/categoryId=(btc-updown-5m-\d+)/)?.[1] || slug;
+        assetId = raw.match(/marketId[=\\":]+(\d+)/)?.[1] || null;
+        endDate = raw.match(/\\"endsAt\\":\\"([^"\\]+)\\"/)?.[1] || null;
+        const trading = raw.match(/\\"isTradingEnabled\\":(true|false)/)?.[1];
+        const status = raw.match(/\\"isTradingEnabled\\":(?:true|false),\\"status\\":\\"([^"\\]+)\\"/)?.[1];
+        open = trading !== 'false' && (!status || status === 'REGISTERED' || status === 'OPEN');
+      }
+      if (!assetId || !/^\d+$/.test(assetId) || !open) throw new Error('Predict.fun 5m market unavailable');
+      const endMs = Date.parse(endDate);
+      const expiresAt = Number.isFinite(endMs) && endMs > at ? endMs : fallbackExpiresAt;
+      return { slug, assetId, expiresAt };
+    }
     const data = await response.json();
     const market = (Array.isArray(data) ? data : data?.markets)?.[0];
     const outcomes = typeof market?.outcomes === 'string' ? JSON.parse(market.outcomes) : market?.outcomes;
@@ -59,14 +83,14 @@ export class StreamConnection {
         this.expiresAt = market.expiresAt;
         this.monitor.market?.(this.index, market);
         this.monitor.connection(this.index, true);
-        send({ type: 'market', assets_ids: [market.assetId] });
+        send(venue.subscribeMarket ? venue.subscribeMarket(market.assetId) : { type: 'market', assets_ids: [market.assetId] });
         this.expiry = setTimeout(() => this.rollover(market.expiresAt), Math.max(20, market.expiresAt - now() + 25));
       } else {
         this.monitor.connection(this.index, true);
         if (venue.subscribe) send(venue.subscribe);
       }
       if (venue.heartbeat) send(venue.heartbeat);
-      if (venue.ping || venue.heartbeat) this.heartbeat = setInterval(() => {
+      if (venue.ping || venue.heartbeat || venue.echoHeartbeat) this.heartbeat = setInterval(() => {
         if (this.expiresAt && now() >= this.expiresAt) { this.rollover(this.expiresAt); return; }
         // Count actual heartbeat opportunities. Delayed background timers alone
         // do not prove the socket stopped responding.
@@ -92,6 +116,12 @@ export class StreamConnection {
       const at = now(); missedHeartbeats = 0;
       if (this.expiresAt && at >= this.expiresAt) { this.rollover(this.expiresAt); return; }
       if (typeof event.data !== 'string' || event.data.length > 1024 * 1024) { fail(); return; }
+      if (venue.echoHeartbeat && event.data.includes('"heartbeat"')) {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg?.topic === 'heartbeat') send({ method: 'heartbeat', data: msg.data });
+        } catch { fail(); return; }
+      }
       if (this.monitor.frame(this.index, event.data, at) < 0) fail();
     };
     socket.onerror = socket.onclose = fail;

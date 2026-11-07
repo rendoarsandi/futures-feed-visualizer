@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Monitor, DEFAULT_SETTINGS, SPOT_INDEX, POLYMARKET_INDEX, WEIGHTED_INDEX } from '../public/engine.js';
+import { Monitor, DEFAULT_SETTINGS, SPOT_INDEX, POLYMARKET_INDEX, PREDICTFUN_INDEX, WEIGHTED_INDEX } from '../public/engine.js';
 const START = 1800000000000;
 function wire(venue, price, at, id, overrides = {}) {
   const ms = Math.floor(at);
@@ -13,11 +13,12 @@ function wire(venue, price, at, id, overrides = {}) {
     { feed: 'trade', product_id: 'PF_XBTUSD', price, time: ms, uid: String(id) },
     { e: 'aggTrade', E: ms, s: 'BTCUSDT', p: String(price), T: ms, a: String(id) },
     { event_type: 'last_trade_price', asset_id: 'poly-btc-5m-up', price: String(price), timestamp: String(ms), transaction_hash: String(id), side: 'BUY', size: '10' },
+    { type: 'M', topic: 'predictOrderbook/4304695', data: { marketId: 4304695, updateTimestampMs: ms, asks: [[.52, 100]], bids: [[.48, 100]], lastOrderSettled: { id: String(id), price: String(price), kind: 'LIMIT', side: 'Bid', outcome: 'Yes', marketId: 4304695 } } },
   ];
   return JSON.stringify({ ...messages[venue], ...overrides });
 }
 function send(m, venue, price, at, id) { return m.frame(venue, wire(venue, price, at, id), at); }
-function warm(m, prices = [100, 200, 300, 400, 500, 600, 100, .5]) {
+function warm(m, prices = [100, 200, 300, 400, 500, 600, 100, .5, .5]) {
   prices.forEach((price, i) => { m.connection(i, true); send(m, i, price, START, 1); send(m, i, price, START + 200, 2); });
   m.state(START + 200);
 }
@@ -327,6 +328,44 @@ test('Polymarket 5m tracks executed Up trades visually without simulated buy cou
   assert.equal(m.state(START + 300003).series[POLYMARKET_INDEX].price, .51);
 });
 
+test('Predict.fun 5m tracks settled Up trades visually, deduplicates unchanged book updates and resets on rollover', () => {
+  const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+  m.market(PREDICTFUN_INDEX, { slug: 'btc-updown-5m-6000000', assetId: '4304695', expiresAt: START + 300000 });
+  m.connection(PREDICTFUN_INDEX, true);
+  const weightedBefore = m.state(START + 200).series[WEIGHTED_INDEX];
+  // Ignore ack frames, heartbeats, book snapshots without lastOrderSettled, foreign markets and invalid share prices.
+  assert.equal(m.frame(PREDICTFUN_INDEX, JSON.stringify({ type: 'R', requestId: 1, success: true }), START + 201), 0);
+  assert.equal(m.frame(PREDICTFUN_INDEX, JSON.stringify({ type: 'M', topic: 'heartbeat', data: START + 202 }), START + 202), 0);
+  assert.equal(m.frame(PREDICTFUN_INDEX, JSON.stringify({ type: 'M', topic: 'predictOrderbook/4304695', data: { marketId: 4304695, updateTimestampMs: START + 203, asks: [[.52, 100]], bids: [[.48, 100]], lastOrderSettled: null } }), START + 203), 0);
+  assert.equal(m.frame(PREDICTFUN_INDEX, JSON.stringify({ type: 'M', topic: 'predictOrderbook/9999999', data: { marketId: 9999999, updateTimestampMs: START + 204, lastOrderSettled: { id: 'ord-foreign', price: '0.50', marketId: 9999999 } } }), START + 204), 0);
+  assert.equal(m.frame(PREDICTFUN_INDEX, wire(PREDICTFUN_INDEX, 1.05, START + 205, 'ord-bad'), START + 205), 0);
+  assert.equal(m.frame(PREDICTFUN_INDEX, wire(PREDICTFUN_INDEX, .5, START + 210, 'ord-1'), START + 210), 1);
+  // Subsequent order-book depth updates carrying the same settled order ID must not count as new executions.
+  assert.equal(m.frame(PREDICTFUN_INDEX, wire(PREDICTFUN_INDEX, .5, START + 310, 'ord-1'), START + 310), 0);
+  assert.equal(m.frame(PREDICTFUN_INDEX, wire(PREDICTFUN_INDEX, .55, START + 410, 'ord-2'), START + 410), 1);
+  let state = m.state(START + 410);
+  const pred = state.series[PREDICTFUN_INDEX];
+  assert.equal(pred.ready, true);
+  assert.equal(pred.price, .55);
+  close(pred.move, 10);
+  assert.equal(pred.up, 0);
+  assert.equal(pred.down, 0);
+  assert.ok(state.recent.every(e => e.series !== PREDICTFUN_INDEX));
+  assert.deepEqual(state.series[WEIGHTED_INDEX], weightedBefore);
+  // Expiry invalidates the expired market and rollover to the next 5m market clears held price and baseline.
+  assert.equal(m.frame(PREDICTFUN_INDEX, wire(PREDICTFUN_INDEX, .99, START + 300000, 'ord-expired'), START + 300000), 0);
+  assert.equal(m.state(START + 300000).series[PREDICTFUN_INDEX].ready, false);
+  m.market(PREDICTFUN_INDEX, { slug: 'btc-updown-5m-6000300', assetId: '4304700', expiresAt: START + 600000 });
+  m.connection(PREDICTFUN_INDEX, true);
+  state = m.state(START + 300001);
+  assert.equal(state.series[PREDICTFUN_INDEX].price, 0);
+  assert.equal(state.series[PREDICTFUN_INDEX].ready, false);
+  assert.equal(state.series[PREDICTFUN_INDEX].slug, 'btc-updown-5m-6000300');
+  assert.equal(m.frame(PREDICTFUN_INDEX, wire(PREDICTFUN_INDEX, .99, START + 300002, 'ord-stale'), START + 300002), 0);
+  assert.equal(m.frame(PREDICTFUN_INDEX, JSON.stringify({ type: 'M', topic: 'predictOrderbook/4304700', data: { marketId: 4304700, updateTimestampMs: START + 300003, lastOrderSettled: { id: 'ord-new-1', price: '0.52', marketId: 4304700 } } }), START + 300003), 1);
+  assert.equal(m.state(START + 300003).series[PREDICTFUN_INDEX].price, .52);
+});
+
 test('diagnostic lag tracks event age, contributes to weighted lag and resets on forward gap or reconnect', () => {
   const m = new Monitor({ ...DEFAULT_SETTINGS, weights: [1, 1, 0, 0, 0, 0] }, START);
   m.connection(0, true);
@@ -371,5 +410,6 @@ test('diagnostic lag tracks event age, contributes to weighted lag and resets on
   assert.equal(demoState.series[1].lag, 45);
   assert.equal(demoState.series[SPOT_INDEX].lag, 0);
   assert.equal(demoState.series[POLYMARKET_INDEX].lag, 100);
+  assert.equal(demoState.series[PREDICTFUN_INDEX].lag, 120);
   assert.equal(demoState.series[WEIGHTED_INDEX].lag, 113);
 });

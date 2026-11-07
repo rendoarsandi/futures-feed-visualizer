@@ -23,8 +23,8 @@
   <main>
     <div class="charts">
       <section class="chart-panel price-panel" aria-labelledby="price-title">
-        <div class="chart-heading"><h2 id="price-title">BTC price</h2><span>Solid: ready · dashed: last known · right axis: Polymarket 5m Up</span></div>
-        <div class="plot" id="price-plot"><canvas id="price-chart" aria-label="Line chart comparing six futures prices, Binance Spot, Polymarket 5m Up price and weighted futures price"></canvas><div class="empty" id="empty">Waiting for prices…</div></div>
+        <div class="chart-heading"><h2 id="price-title">BTC price</h2><span>Solid: ready · dashed: last known · right axis: 5m Up (¢)</span></div>
+        <div class="plot" id="price-plot"><canvas id="price-chart" aria-label="Line chart comparing six futures prices, Binance Spot, Polymarket 5m Up, Predict.fun 5m Up and weighted futures price"></canvas><div class="empty" id="empty">Waiting for prices…</div></div>
       </section>
       <section class="chart-panel move-panel" aria-labelledby="move-title">
         <div class="chart-heading"><h2 id="move-title">200 ms movement</h2><span id="threshold-caption">Signals at ±0.01% · eligible periods only</span></div>
@@ -34,10 +34,10 @@
     </div>
     <aside>
       <section class="side-section">
-        <div class="section-heading"><h2>Feeds</h2><span id="ready-count">0 / 8 ready</span></div>
+        <div class="section-heading"><h2>Feeds</h2><span id="ready-count">0 / 9 ready</span></div>
         <table class="feed-table"><thead><tr><th scope="col">Source</th><th scope="col">Price</th><th scope="col" id="move-column">Δ 200ms</th></tr></thead><tbody id="feeds"></tbody></table>
-        <p class="hint">Crossed-out markets are disconnected and stop counting. Click again to reconnect. Weighted averages eligible futures returns; Binance Spot and Polymarket 5m are excluded. Crossing out Weighted pauses its counter.</p>
-        <p class="hint">Live WebSocket trades. Deribit publishes in 100 ms batches; Kraken Futures uses PF_XBTUSD. Polymarket 5m streams executed Up trades on the active 5m BTC market and auto-switches at expiry (visual only, no simulated buys).</p>
+        <p class="hint">Crossed-out markets are disconnected and stop counting. Click again to reconnect. Weighted averages eligible futures returns; Binance Spot, Polymarket 5m and Predict.fun 5m are excluded. Crossing out Weighted pauses its counter.</p>
+        <p class="hint">Live WebSocket trades. Deribit publishes in 100 ms batches; Kraken Futures uses PF_XBTUSD. Polymarket 5m and Predict.fun 5m stream executed Up trades on the active 5m BTC market and auto-switch at expiry (visual only, no simulated buys).</p>
       </section>
       <section class="side-section">
         <div class="section-heading"><h2>Simulated buys</h2><button id="reset" class="text-button" type="button">Reset</button></div>

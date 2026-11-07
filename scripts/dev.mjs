@@ -8,6 +8,15 @@ const server = createServer(async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
   try {
     const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    if (path.startsWith('/predict-market/')) {
+      const slug = path.slice('/predict-market/'.length);
+      if (!/^btc-updown-5m-\d+$/.test(slug)) { res.writeHead(400); res.end(); return; }
+      const upstream = await fetch(`https://predict.fun/market/${slug}`);
+      const body = await upstream.text();
+      res.writeHead(upstream.status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      res.end(req.method === 'HEAD' ? undefined : body);
+      return;
+    }
     const file = resolve(root, `.${path === '/' ? '/index.html' : path}`);
     if (!file.startsWith(root.endsWith(sep) ? root : root + sep)) { res.writeHead(403); res.end(); return; }
     const data = await readFile(file);
