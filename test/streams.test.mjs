@@ -78,7 +78,7 @@ test('venue subscription failures retire the socket and schedule recovery', t =>
 test('Polymarket 5m stream resolves active 5m market and auto-switches when expired', async t => {
   let clock = 60000, nextTimer = 0;
   const baseOrigin = 1800000000000;
-  const timers = new Map(), sockets = [], fetchedUrls = [];
+  const timers = new Map(), sockets = [], fetchedUrls = [], fetchOptions = [];
   const schedule = (callback, delay, interval) => { const id = ++nextTimer; timers.set(id, { callback, delay, interval }); return id; };
   t.mock.method(performance, 'now', () => clock);
   const originalTimeOrigin = Object.getOwnPropertyDescriptor(performance, 'timeOrigin') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(performance), 'timeOrigin');
@@ -88,8 +88,9 @@ test('Polymarket 5m stream resolves active 5m market and auto-switches when expi
   t.mock.method(globalThis, 'setInterval', (callback, delay) => schedule(callback, delay, true));
   t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
   t.mock.method(globalThis, 'clearInterval', id => timers.delete(id));
-  t.mock.method(globalThis, 'fetch', async url => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
     fetchedUrls.push(String(url));
+    fetchOptions.push(options);
     const slug = String(url).split('slug=')[1];
     const windowSec = Number(slug.split('-').at(-1));
     return {
@@ -120,6 +121,7 @@ test('Polymarket 5m stream resolves active 5m market and auto-switches when expi
   await new Promise(resolve => queueMicrotask(resolve));
   assert.equal(fetchedUrls.length, 1);
   assert.ok(fetchedUrls[0].endsWith('btc-updown-5m-1800000000'));
+  assert.equal(fetchOptions[0]?.headers, undefined);
   assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: 'market', assets_ids: ['up-1800000000'] });
   sockets[0].onmessage({ data: JSON.stringify({ event_type: 'last_trade_price', asset_id: 'up-1800000000', price: '0.64', timestamp: String(baseOrigin + clock), transaction_hash: 'tx-1' }) });
   assert.equal(monitor.state(baseOrigin + clock).series[POLYMARKET_INDEX].price, .64);
@@ -144,7 +146,7 @@ test('Polymarket 5m stream resolves active 5m market and auto-switches when expi
 test('Polymarket 15m stream resolves active 15m market and auto-switches when expired', async t => {
   let clock = 60000, nextTimer = 0;
   const baseOrigin = 1800000000000;
-  const timers = new Map(), sockets = [], fetchedUrls = [];
+  const timers = new Map(), sockets = [], fetchedUrls = [], fetchOptions = [];
   const schedule = (callback, delay, interval) => { const id = ++nextTimer; timers.set(id, { callback, delay, interval }); return id; };
   t.mock.method(performance, 'now', () => clock);
   const originalTimeOrigin = Object.getOwnPropertyDescriptor(performance, 'timeOrigin') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(performance), 'timeOrigin');
@@ -154,8 +156,9 @@ test('Polymarket 15m stream resolves active 15m market and auto-switches when ex
   t.mock.method(globalThis, 'setInterval', (callback, delay) => schedule(callback, delay, true));
   t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
   t.mock.method(globalThis, 'clearInterval', id => timers.delete(id));
-  t.mock.method(globalThis, 'fetch', async url => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
     fetchedUrls.push(String(url));
+    fetchOptions.push(options);
     const slug = String(url).split('slug=')[1];
     const windowSec = Number(slug.split('-').at(-1));
     return {
@@ -210,7 +213,7 @@ test('Polymarket 15m stream resolves active 15m market and auto-switches when ex
 test('Predict.fun 5m stream resolves active 5m market, echoes server heartbeats and auto-switches when expired', async t => {
   let clock = 60000, nextTimer = 0;
   const baseOrigin = 1800000000000;
-  const timers = new Map(), sockets = [], fetchedUrls = [];
+  const timers = new Map(), sockets = [], fetchedUrls = [], fetchOptions = [];
   const schedule = (callback, delay, interval) => { const id = ++nextTimer; timers.set(id, { callback, delay, interval }); return id; };
   t.mock.method(performance, 'now', () => clock);
   const originalTimeOrigin = Object.getOwnPropertyDescriptor(performance, 'timeOrigin') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(performance), 'timeOrigin');
@@ -220,8 +223,9 @@ test('Predict.fun 5m stream resolves active 5m market, echoes server heartbeats 
   t.mock.method(globalThis, 'setInterval', (callback, delay) => schedule(callback, delay, true));
   t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
   t.mock.method(globalThis, 'clearInterval', id => timers.delete(id));
-  t.mock.method(globalThis, 'fetch', async url => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
     fetchedUrls.push(String(url));
+    fetchOptions.push(options);
     const windowSec = Number(String(url).split('-').at(-1));
     const marketId = windowSec === 1800000000 ? 4304695 : 4304700;
     const endsAt = new Date((windowSec + 300) * 1000).toISOString();
@@ -246,6 +250,8 @@ test('Predict.fun 5m stream resolves active 5m market, echoes server heartbeats 
   await new Promise(resolve => queueMicrotask(resolve));
   assert.equal(fetchedUrls.length, 1);
   assert.ok(fetchedUrls[0].endsWith('btc-updown-5m-1800000000'));
+  assert.equal(fetchOptions[0]?.headers?.['Accept-Language'], 'en-US,en;q=0.9');
+  assert.equal(fetchOptions[0]?.credentials, 'omit');
   assert.deepEqual(JSON.parse(sockets[0].sent[0]), { method: 'subscribe', requestId: 1, params: ['predictOrderbook/4304695'] });
   sockets[0].onmessage({ data: JSON.stringify({ type: 'M', topic: 'heartbeat', data: baseOrigin + clock }) });
   assert.deepEqual(JSON.parse(sockets[0].sent[1]), { method: 'heartbeat', data: baseOrigin + clock });

@@ -25,7 +25,10 @@ export class StreamConnection {
     const at = Math.max(now(), this.minWindowMs);
     const windowSec = Math.floor(at / venue.windowMs) * (venue.windowMs / 1000);
     const fallbackExpiresAt = (windowSec + venue.windowMs / 1000) * 1000;
-    const response = await fetch(`${venue.marketUrl}${windowSec}`, { signal: this.controller.signal });
+    const fetchOptions = venue.echoHeartbeat
+      ? { signal: this.controller.signal, credentials: 'omit', headers: { 'Accept-Language': 'en-US,en;q=0.9' } }
+      : { signal: this.controller.signal };
+    const response = await fetch(`${venue.marketUrl}${windowSec}`, fetchOptions);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     if (venue.echoHeartbeat) {
       const raw = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());

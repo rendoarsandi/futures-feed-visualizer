@@ -14,6 +14,9 @@ const expiryLabel = (s, at) => {
 let state = null, history = [], hidden = new Set(), frozenAt = null, frozenHistory = null, pointer = null, scheduled = false, recentKey = '', syncLag = true;
 const smoothLags = new Float64Array(names.length);
 const visualDelays = new Float64Array(names.length);
+const recentSyncAt = new Map();
+const lastRecentSyncAt = new Float64Array(names.length);
+const recentEventKey = (e) => `${e.series}:${e.at}:${e.direction}:${e.move}`;
 const pointAt = (p, i) => syncLag ? (p.syncAt ? p.syncAt[i] : p.at + visualDelays[i]) : p.at;
 const rows = [], counterRows = [];
 const time = (at, millis = false) => new Date(at).toISOString().slice(11, millis ? 23 : 19);
@@ -54,8 +57,8 @@ function renderRecent() {
   const now = frozenAt || state.at;
   const visible = [];
   for (const event of state.recent) {
-    const delay = syncLag ? (visualDelays[event.series] || 0) : 0;
-    const displayAt = Math.round(event.at + delay);
+    const frozenSyncAt = recentSyncAt.get(recentEventKey(event));
+    const displayAt = syncLag ? (frozenSyncAt ?? Math.round(event.at)) : Math.round(event.at);
     if (displayAt <= now) {
       visible.push({ ...event, displayAt });
     }
@@ -81,7 +84,7 @@ function accept(next) {
   const newSession = !state || state.epoch !== next.epoch;
   if (newSession) {
     history = []; configureInputs(next.settings); frozenAt = null; frozenHistory = null; updatePause(); recentKey = '';
-    smoothLags.fill(0); visualDelays.fill(0);
+    smoothLags.fill(0); visualDelays.fill(0); recentSyncAt.clear(); lastRecentSyncAt.fill(0);
   }
   const visibilityChanged = next.series.some((s, i) => hidden.has(i) === s.enabled);
   state = next;
@@ -164,16 +167,36 @@ function accept(next) {
     rows[i].button.disabled = Boolean(rows[i].pending);
     rows[i].button.setAttribute('aria-pressed', String(s.enabled));
     rows[i].button.setAttribute('aria-label', `${i === WEIGHTED_INDEX ? s.enabled ? 'Disable' : 'Enable' : s.enabled ? 'Disconnect' : 'Reconnect'} ${names[i]}`);
-    rows[i].status.textContent = s.status + (!s.ready && s.price > 0 ? ' · held' : '') + (s.connected && s.lag ? ` · ${s.lag}ms` : '') + (isPrediction(i) ? expiryLabel(s, next.at) : '');
-    rows[i].price.textContent = s.price > 0 ? formatPrice(i, s.price) : '—';
-    rows[i].move.textContent = s.ready ? pct(s.move) : '—';
-    rows[i].move.className = s.ready ? (s.move > 0 ? 'positive' : s.move < 0 ? 'negative' : '') : '';
+    const nextStatus = s.status + (!s.ready && s.price > 0 ? ' · held' : '') + (s.connected && s.lag ? ` · ${s.lag}ms` : '') + (isPrediction(i) ? expiryLabel(s, next.at) : '');
+    if (rows[i].status.textContent !== nextStatus) rows[i].status.textContent = nextStatus;
+    const nextPrice = s.price > 0 ? formatPrice(i, s.price) : '—';
+    if (rows[i].price.textContent !== nextPrice) rows[i].price.textContent = nextPrice;
+    const nextMove = s.ready ? pct(s.move) : '—';
+    if (rows[i].move.textContent !== nextMove) rows[i].move.textContent = nextMove;
+    const nextMoveClass = s.ready ? (s.move > 0 ? 'positive' : s.move < 0 ? 'negative' : '') : '';
+    if (rows[i].move.className !== nextMoveClass) rows[i].move.className = nextMoveClass;
     if (counterRows[i]) {
       counterRows[i].up.textContent = countFormat.format(s.up);
       counterRows[i].down.textContent = countFormat.format(s.down);
       counterRows[i].total.textContent = countFormat.format(s.up + s.down);
     }
   });
+  if (next.recent) {
+    const activeKeys = new Set();
+    for (const event of next.recent) {
+      const key = recentEventKey(event);
+      activeKeys.add(key);
+      if (!recentSyncAt.has(key)) {
+        const delay = visualDelays[event.series] || 0;
+        const synced = Math.max(lastRecentSyncAt[event.series] + 1, Math.round(event.at + delay));
+        lastRecentSyncAt[event.series] = synced;
+        recentSyncAt.set(key, synced);
+      }
+    }
+    for (const key of recentSyncAt.keys()) {
+      if (!activeKeys.has(key)) recentSyncAt.delete(key);
+    }
+  }
   renderRecent();
   $('empty').hidden = history.some((p) => p.prices.some((value) => value > 0));
   const seconds = Math.max(0, Math.floor((next.at - next.point.at + (history.length ? next.point.at - history[0].at : 0)) / 1000));
@@ -245,10 +268,19 @@ $('sync').addEventListener('click', () => { syncLag = !syncLag; $('sync').setAtt
 function requestDraw() { if (scheduled) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; draw(); }); }
 const plots = [[$('price-chart'), 'prices'], [$('move-chart'), 'moves']];
 const observer = new ResizeObserver(requestDraw); for (const [canvas] of plots) observer.observe(canvas.parentElement);
+function clearPointer() {
+  if (!pointer) return;
+  pointer = null;
+  $('tooltip').hidden = true;
+  requestDraw();
+}
 for (const [canvas] of plots) {
   canvas.addEventListener('pointermove', (event) => { const rect = canvas.getBoundingClientRect(); pointer = { canvas, x: event.clientX - rect.left, screenX: event.clientX, screenY: event.clientY }; requestDraw(); });
-  canvas.addEventListener('pointerleave', () => { pointer = null; $('tooltip').hidden = true; requestDraw(); });
+  canvas.addEventListener('pointerleave', clearPointer);
+  canvas.addEventListener('pointercancel', clearPointer);
 }
+window.addEventListener('scroll', clearPointer, { passive: true });
+document.querySelector('aside')?.addEventListener('scroll', clearPointer, { passive: true });
 
 function nearest(points, at) {
   let lo = 0, hi = points.length - 1;

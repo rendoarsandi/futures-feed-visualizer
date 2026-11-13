@@ -11,7 +11,7 @@ const server = createServer(async (req, res) => {
     if (path.startsWith('/predict-market/')) {
       const slug = path.slice('/predict-market/'.length);
       if (!/^btc-updown-5m-\d+$/.test(slug)) { res.writeHead(400); res.end(); return; }
-      const upstream = await fetch(`https://predict.fun/market/${slug}`);
+      const upstream = await fetch(`https://predict.fun/market/${slug}`, { headers: { 'Accept-Language': 'en-US,en;q=0.9' } });
       const body = await upstream.text();
       res.writeHead(upstream.status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       res.end(req.method === 'HEAD' ? undefined : body);

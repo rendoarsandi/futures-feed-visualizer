@@ -16,7 +16,12 @@ body {
   background:var(--bg);
   color:var(--text);
   font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  font-variant-numeric:tabular-nums
+  font-variant-numeric:tabular-nums;
+  display:flex;
+  flex-direction:column;
+  height:100vh;
+  height:100svh;
+  min-height:667px
 }
 button,input,select {
   font:inherit
@@ -184,8 +189,8 @@ time {
 main {
   display:grid;
   grid-template-columns:minmax(0,1fr) 365px;
-  height:calc(100dvh - 107px);
-  min-height:560px
+  flex:1;
+  min-height:0
 }
 .charts {
   min-width:0;
@@ -284,6 +289,15 @@ table {
   border-collapse:collapse;
   text-align:right
 }
+.feed-table {
+  table-layout:fixed
+}
+.feed-table th:nth-child(2),.feed-table td:nth-child(2) {
+  width:74px
+}
+.feed-table th:nth-child(3),.feed-table td:nth-child(3) {
+  width:82px
+}
 th {
   color:var(--muted);
   font-size: 12px;
@@ -333,7 +347,9 @@ tr+tr td {
   color:var(--muted);
   font-size: 12px;
   margin-left:19px;
-  margin-top:-4px
+  margin-top:-4px;
+  white-space:normal;
+  overflow-wrap:anywhere
 }
 .weighted td {
   font-weight:650
@@ -537,13 +553,19 @@ summary span {
   .settings #form-status {
     width:100%
   }
+  body {
+    display:block;
+    height:auto;
+    min-height:0
+  }
   main {
     display:block;
     height:auto;
     min-height:0
   }
   .charts {
-    height:76dvh;
+    height:76vh;
+    height:76svh;
     min-height:510px;
     grid-template-rows:minmax(240px,3fr) minmax(170px,2fr) 40px
   }
@@ -567,8 +589,7 @@ summary span {
     border-left:0;
     border-top:1px solid var(--line);
     overflow:visible;
-    display:grid;
-    grid-template-columns:1fr 1fr
+    display:block
   }
   .side-section {
     padding:13px
