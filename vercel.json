@@ -4,7 +4,9 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/predict-market/:slug", "destination": "https://predict.fun/market/:slug" }
+    { "source": "/predict-market/:slug", "destination": "https://predict.fun/market/:slug" },
+    { "source": "/:locale([a-z-]+)/market/:slug(btc-updown-5m-[0-9]+)", "destination": "https://predict.fun/:locale/market/:slug" },
+    { "source": "/market/:slug(btc-updown-5m-[0-9]+)", "destination": "https://predict.fun/market/:slug" }
   ],
   "headers": [
     { "source": "/(.*)", "headers": [

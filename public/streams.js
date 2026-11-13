@@ -105,7 +105,7 @@ export class StreamConnection {
       }, 5000);
       this.rotation = setTimeout(fail, 23 * 60 * 60 * 1000);
     };
-    this.deadline = setTimeout(fail, 10000);
+    this.deadline = setTimeout(fail, venue.marketUrl ? 15000 : 10000);
     if (venue.marketUrl) {
       this.resolveMarket(venue).then(info => {
         if (this.socket !== socket || this.stopped) return;

@@ -204,7 +204,7 @@ function accept(next) {
   if (!frozenAt || visibilityChanged) requestDraw();
 }
 
-const worker = new Worker(new URL('./feed-worker.js?v=3', import.meta.url), { type: 'module' });
+const worker = new Worker(new URL('./feed-worker.js?v=4', import.meta.url), { type: 'module' });
 let requestID = 0;
 const requests = new Map();
 worker.onmessage = ({ data }) => {
