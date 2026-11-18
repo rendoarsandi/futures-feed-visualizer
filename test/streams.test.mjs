@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Monitor, POLYMARKET_INDEX, POLYMARKET_15M_INDEX, PREDICTFUN_INDEX } from '../public/engine.js';
+import { Monitor, POLYMARKET_INDEX, POLYMARKET_ETH_INDEX } from '../public/engine.js';
 import { StreamConnection } from '../public/streams.js';
 
 test('delayed heartbeat timers preserve healthy sockets and silent feeds recover', async t => {
@@ -143,7 +143,7 @@ test('Polymarket 5m stream resolves active 5m market and auto-switches when expi
   assert.equal(state.price, 0);
 });
 
-test('Polymarket 15m stream resolves active 15m market and auto-switches when expired', async t => {
+test('Polymarket ETH 5m stream resolves active 5m market and auto-switches when expired', async t => {
   let clock = 60000, nextTimer = 0;
   const baseOrigin = 1800000000000;
   const timers = new Map(), sockets = [], fetchedUrls = [], fetchOptions = [];
@@ -166,8 +166,8 @@ test('Polymarket 15m stream resolves active 15m market and auto-switches when ex
       json: async () => [{
         slug,
         outcomes: '["Up", "Down"]',
-        clobTokenIds: JSON.stringify([`up-15m-${windowSec}`, `down-15m-${windowSec}`]),
-        endDate: new Date((windowSec + 900) * 1000).toISOString(),
+        clobTokenIds: JSON.stringify([`up-eth-${windowSec}`, `down-eth-${windowSec}`]),
+        endDate: new Date((windowSec + 300) * 1000).toISOString(),
         acceptingOrders: true,
         closed: false,
       }],
@@ -182,81 +182,17 @@ test('Polymarket 15m stream resolves active 15m market and auto-switches when ex
     close() { this.closed = true; this.readyState = 3; }
   };
   const monitor = new Monitor(undefined, baseOrigin + clock);
-  const connection = new StreamConnection(POLYMARKET_15M_INDEX, monitor);
+  const connection = new StreamConnection(POLYMARKET_ETH_INDEX, monitor);
   t.after(() => connection.close());
   sockets[0].onopen();
   await new Promise(resolve => queueMicrotask(resolve));
   await new Promise(resolve => queueMicrotask(resolve));
   assert.equal(fetchedUrls.length, 1);
-  assert.ok(fetchedUrls[0].endsWith('btc-updown-15m-1800000000'));
-  assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: 'market', assets_ids: ['up-15m-1800000000'] });
-  sockets[0].onmessage({ data: JSON.stringify({ event_type: 'last_trade_price', asset_id: 'up-15m-1800000000', price: '0.64', timestamp: String(baseOrigin + clock), transaction_hash: 'tx-1' }) });
-  assert.equal(monitor.state(baseOrigin + clock).series[POLYMARKET_15M_INDEX].price, .64);
-  // Advance to 15m market expiry and fire the scheduled expiry rollover timer.
-  clock = 900025;
-  const expiryTimer = [...timers.values()].find(item => !item.interval && item.delay < 900000);
-  assert.ok(expiryTimer);
-  expiryTimer.callback();
-  assert.equal(sockets[0].closed, true);
-  assert.equal(sockets.length, 2);
-  sockets[1].onopen();
-  await new Promise(resolve => queueMicrotask(resolve));
-  await new Promise(resolve => queueMicrotask(resolve));
-  assert.equal(fetchedUrls.length, 2);
-  assert.ok(fetchedUrls[1].endsWith('btc-updown-15m-1800000900'));
-  assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: 'market', assets_ids: ['up-15m-1800000900'] });
-  const state = monitor.state(baseOrigin + clock).series[POLYMARKET_15M_INDEX];
-  assert.equal(state.slug, 'btc-updown-15m-1800000900');
-  assert.equal(state.price, 0);
-});
-
-test('Predict.fun 5m stream resolves active 5m market, echoes server heartbeats and auto-switches when expired', async t => {
-  let clock = 60000, nextTimer = 0;
-  const baseOrigin = 1800000000000;
-  const timers = new Map(), sockets = [], fetchedUrls = [], fetchOptions = [];
-  const schedule = (callback, delay, interval) => { const id = ++nextTimer; timers.set(id, { callback, delay, interval }); return id; };
-  t.mock.method(performance, 'now', () => clock);
-  const originalTimeOrigin = Object.getOwnPropertyDescriptor(performance, 'timeOrigin') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(performance), 'timeOrigin');
-  Object.defineProperty(performance, 'timeOrigin', { value: baseOrigin, configurable: true });
-  t.after(() => { if (originalTimeOrigin) Object.defineProperty(performance, 'timeOrigin', originalTimeOrigin); });
-  t.mock.method(globalThis, 'setTimeout', (callback, delay) => schedule(callback, delay, false));
-  t.mock.method(globalThis, 'setInterval', (callback, delay) => schedule(callback, delay, true));
-  t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
-  t.mock.method(globalThis, 'clearInterval', id => timers.delete(id));
-  t.mock.method(globalThis, 'fetch', async (url, options) => {
-    fetchedUrls.push(String(url));
-    fetchOptions.push(options);
-    const windowSec = Number(String(url).split('-').at(-1));
-    const marketId = windowSec === 1800000000 ? 4304695 : 4304700;
-    const endsAt = new Date((windowSec + 300) * 1000).toISOString();
-    return {
-      ok: true,
-      text: async () => `<meta property="og:image" content="https://predict.fun/api/generate/image/market.png?marketId=${marketId}&amp;categoryId=btc-updown-5m-${windowSec}"/>{\\"isTradingEnabled\\":true,\\"status\\":\\"REGISTERED\\",\\"endsAt\\":\\"${endsAt}\\"}`,
-    };
-  });
-  const originalWebSocket = globalThis.WebSocket;
-  t.after(() => { globalThis.WebSocket = originalWebSocket; });
-  globalThis.WebSocket = class {
-    static CONNECTING = 0; static OPEN = 1;
-    constructor(url) { this.url = url; this.closed = false; this.readyState = 1; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
-    send(frame) { this.sent.push(frame); }
-    close() { this.closed = true; this.readyState = 3; }
-  };
-  const monitor = new Monitor(undefined, baseOrigin + clock);
-  const connection = new StreamConnection(PREDICTFUN_INDEX, monitor);
-  t.after(() => connection.close());
-  sockets[0].onopen();
-  await new Promise(resolve => queueMicrotask(resolve));
-  await new Promise(resolve => queueMicrotask(resolve));
-  assert.equal(fetchedUrls.length, 1);
-  assert.ok(fetchedUrls[0].endsWith('btc-updown-5m-1800000000'));
-  assert.equal(fetchOptions[0]?.headers?.['Accept-Language'], 'en-US,en;q=0.9');
-  assert.equal(fetchOptions[0]?.credentials, 'omit');
-  assert.deepEqual(JSON.parse(sockets[0].sent[0]), { method: 'subscribe', requestId: 1, params: ['predictOrderbook/4304695'] });
-  sockets[0].onmessage({ data: JSON.stringify({ type: 'M', topic: 'heartbeat', data: baseOrigin + clock }) });
-  assert.deepEqual(JSON.parse(sockets[0].sent[1]), { method: 'heartbeat', data: baseOrigin + clock });
-  sockets[0].onmessage({ data: JSON.stringify({ type: 'M', topic: 'predictOrderbook/4304695', data: { marketId: 4304695, updateTimestampMs: baseOrigin + clock, lastOrderSettled: { id: 'ord-1', price: '0.58', marketId: 4304695 } } }) });
-  assert.equal(monitor.state(baseOrigin + clock).series[PREDICTFUN_INDEX].price, .58);
+  assert.ok(fetchedUrls[0].endsWith('eth-updown-5m-1800000000'));
+  assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: 'market', assets_ids: ['up-eth-1800000000'] });
+  sockets[0].onmessage({ data: JSON.stringify({ event_type: 'last_trade_price', asset_id: 'up-eth-1800000000', price: '0.64', timestamp: String(baseOrigin + clock), transaction_hash: 'tx-1' }) });
+  assert.equal(monitor.state(baseOrigin + clock).series[POLYMARKET_ETH_INDEX].price, .64);
+  // Advance to 5m market expiry and fire the scheduled expiry rollover timer.
   clock = 300025;
   const expiryTimer = [...timers.values()].find(item => !item.interval && item.delay < 300000);
   assert.ok(expiryTimer);
@@ -267,9 +203,9 @@ test('Predict.fun 5m stream resolves active 5m market, echoes server heartbeats 
   await new Promise(resolve => queueMicrotask(resolve));
   await new Promise(resolve => queueMicrotask(resolve));
   assert.equal(fetchedUrls.length, 2);
-  assert.ok(fetchedUrls[1].endsWith('btc-updown-5m-1800000300'));
-  assert.deepEqual(JSON.parse(sockets[1].sent[0]), { method: 'subscribe', requestId: 1, params: ['predictOrderbook/4304700'] });
-  const state = monitor.state(baseOrigin + clock).series[PREDICTFUN_INDEX];
-  assert.equal(state.slug, 'btc-updown-5m-1800000300');
+  assert.ok(fetchedUrls[1].endsWith('eth-updown-5m-1800000300'));
+  assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: 'market', assets_ids: ['up-eth-1800000300'] });
+  const state = monitor.state(baseOrigin + clock).series[POLYMARKET_ETH_INDEX];
+  assert.equal(state.slug, 'eth-updown-5m-1800000300');
   assert.equal(state.price, 0);
 });

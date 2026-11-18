@@ -1,7 +1,7 @@
-import { NAMES as names, DEFAULT_SETTINGS, POLYMARKET_INDEX, POLYMARKET_15M_INDEX, PREDICTFUN_INDEX, WEIGHTED_INDEX } from './engine.js';
-const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#d4e294', '#e9ab74', '#67d5ef', '#ff79c6', '#e056fd', '#ff9f43', '#63e0bb'];
-const shortNames = ['Binance Fut.', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Fut.', 'Binance Spot', 'Polymarket 5m', 'Polymarket 15m', 'Predict.fun 5m', 'Weighted'];
-const isPrediction = (i) => i === POLYMARKET_INDEX || i === POLYMARKET_15M_INDEX || i === PREDICTFUN_INDEX;
+import { NAMES as names, DEFAULT_SETTINGS, POLYMARKET_INDEX, POLYMARKET_ETH_INDEX, WEIGHTED_INDEX } from './engine.js';
+const colors = ['#f4c768', '#6aa9ff', '#c6a0f6', '#f78d98', '#d4e294', '#e9ab74', '#67d5ef', '#ff79c6', '#e056fd', '#63e0bb'];
+const shortNames = ['Binance Fut.', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Fut.', 'Binance Spot', 'Polymarket BTC 5m', 'Polymarket ETH 5m', 'Weighted'];
+const isPrediction = (i) => i === POLYMARKET_INDEX || i === POLYMARKET_ETH_INDEX;
 const $ = (id) => document.getElementById(id);
 const priceFormat = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const countFormat = new Intl.NumberFormat('en-US');
@@ -204,7 +204,7 @@ function accept(next) {
   if (!frozenAt || visibilityChanged) requestDraw();
 }
 
-const worker = new Worker(new URL('./feed-worker.js?v=4', import.meta.url), { type: 'module' });
+const worker = new Worker(new URL('./feed-worker.js?v=5', import.meta.url), { type: 'module' });
 let requestID = 0;
 const requests = new Map();
 worker.onmessage = ({ data }) => {

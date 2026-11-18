@@ -2,14 +2,13 @@
 // from Poly-Bot 15fe010. Receipt time owns the rolling window; event age is diagnostic.
 export const SPOT_INDEX = 6;
 export const POLYMARKET_INDEX = 7;
-export const POLYMARKET_15M_INDEX = 8;
-export const PREDICTFUN_INDEX = 9;
-export const WEIGHTED_INDEX = 10;
-export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'deribit', 'kraken-futures', 'binance-spot', 'polymarket-5m', 'polymarket-15m', 'predictfun-5m', 'weighted'];
-export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Futures', 'Binance Spot', 'Polymarket 5m', 'Polymarket 15m', 'Predict.fun 5m', 'Weighted'];
+export const POLYMARKET_ETH_INDEX = 8;
+export const WEIGHTED_INDEX = 9;
+export const IDS = ['binance', 'bybit', 'okx', 'hyperliquid', 'deribit', 'kraken-futures', 'binance-spot', 'polymarket-5m', 'polymarket-eth-5m', 'weighted'];
+export const NAMES = ['Binance Futures', 'Bybit', 'OKX', 'Hyperliquid', 'Deribit', 'Kraken Futures', 'Binance Spot', 'Polymarket BTC 5m', 'Polymarket ETH 5m', 'Weighted'];
 export const DEFAULT_SETTINGS = { lookbackMs: 200, threshold: .01, weights: [1, 1, 1, 1, 1, 1] };
 const DIGITS = /^\d+$/;
-const isPrediction = index => index === POLYMARKET_INDEX || index === POLYMARKET_15M_INDEX || index === PREDICTFUN_INDEX;
+const isPrediction = index => index === POLYMARKET_INDEX || index === POLYMARKET_ETH_INDEX;
 
 export function validateSettings(settings) {
   if (!Number.isInteger(settings?.lookbackMs) || settings.lookbackMs < 100 || settings.lookbackMs > 15000) throw new Error('Lookback must be 100–15000 ms');
@@ -77,16 +76,11 @@ export function parseTrades(index, frame, assetId = null) {
   } else if (index === 5 && frame.feed === 'trade' && frame.product_id === 'PF_XBTUSD') {
     // trade_snapshot is historical bootstrap data, never a live execution.
     trades = [{ price: frame.price, eventMS: frame.time, id: typeof frame.uid === 'string' ? frame.uid : null }];
-  } else if (index === POLYMARKET_INDEX || index === POLYMARKET_15M_INDEX) {
+  } else if (isPrediction(index)) {
     const events = Array.isArray(frame) ? frame : [frame];
     trades = events
       .filter(t => t?.event_type === 'last_trade_price' && typeof t.asset_id === 'string' && t.asset_id && (!assetId || t.asset_id === assetId))
       .map(t => ({ price: t.price, eventMS: t.timestamp, id: typeof t.transaction_hash === 'string' ? t.transaction_hash : null }));
-  } else if (index === PREDICTFUN_INDEX && frame.type === 'M' && typeof frame.topic === 'string' && frame.topic.startsWith('predictOrderbook/')) {
-    const d = frame.data, t = d?.lastOrderSettled, topicId = frame.topic.slice(17);
-    if (t && topicId && (!assetId || (topicId === assetId && String(d.marketId ?? topicId) === assetId && String(t.marketId ?? topicId) === assetId))) {
-      trades = [{ price: t.price, eventMS: d.updateTimestampMs, id: integerID(t.id) || (typeof t.id === 'string' ? t.id : null) }];
-    }
   }
   return trades;
 }
@@ -97,7 +91,7 @@ class TradeFeed {
   accept(trade, at) {
     const price = Number(trade.price), eventMS = Number(trade.eventMS), id = trade.id;
     if (!this.connected || (this.expiresAt && at >= this.expiresAt) || !Number.isFinite(price) || price <= 0 || (isPrediction(this.index) && price > 1) || !Number.isSafeInteger(eventMS) || eventMS <= 0 || typeof id !== 'string' || !id || eventMS < this.latestEventMS) return null;
-    const key = this.index === PREDICTFUN_INDEX ? id : `${eventMS}:${id}`;
+    const key = `${eventMS}:${id}`;
     if (this.seen.has(key)) return null;
     let gap = 0;
     if (this.index === 0 || this.index === SPOT_INDEX) {
@@ -234,10 +228,10 @@ export class Monitor {
       const ready = at - Math.max(this.startedAt, this.enabledAt[i]) >= this.settings.lookbackMs;
       const phase = seconds - i * .045;
       const price = isPrediction(i)
-        ? t => .5 + (i === PREDICTFUN_INDEX ? .015 : i === POLYMARKET_15M_INDEX ? -.02 : 0) + .18 * Math.sin(t * 2 * Math.PI / 5) + .03 * Math.sin(t * 2 * Math.PI / 1.7)
+        ? t => .5 + (i === POLYMARKET_ETH_INDEX ? -.02 : 0) + .18 * Math.sin(t * 2 * Math.PI / 5) + .03 * Math.sin(t * 2 * Math.PI / 1.7)
         : t => 80000 + (i - 1) * 3 + 52 * Math.sin(t * 2 * Math.PI / 5) + 9 * Math.sin(t * 2 * Math.PI / 1.7);
       const p = price(phase), base = price(phase - this.settings.lookbackMs / 1000);
-      const lag = enabled ? (i === SPOT_INDEX ? 0 : i === POLYMARKET_INDEX ? 100 : i === POLYMARKET_15M_INDEX ? 110 : i === PREDICTFUN_INDEX ? 120 : i * 45) : 0;
+      const lag = enabled ? (i === SPOT_INDEX ? 0 : i === POLYMARKET_INDEX ? 100 : i === POLYMARKET_ETH_INDEX ? 110 : i * 45) : 0;
       return { connected: enabled, ready: enabled && ready, price: enabled ? p : 0, move: enabled ? (p - base) / base * 100 : 0, updatedAt: enabled ? at : 0, lag };
     });
     all.push(this.weighted(at, all));
@@ -255,9 +249,9 @@ export class Monitor {
       point.prices.push(this.lastPrices[i]); point.moves.push(snap.move); point.ready.push(ready); point.up.push(c.up); point.down.push(c.down); point.lags.push(snap.lag || 0);
       const item = { id: IDS[i], name: NAMES[i], enabled: this.enabled[i], price: this.lastPrices[i], move: snap.move, status, ready, connected: snap.connected, updatedAt: this.lastUpdates[i], up: c.up, down: c.down, missed: c.missed, armed: c.armed, lag: snap.lag || 0 };
       if (isPrediction(i)) {
-        const windowMs = i === POLYMARKET_15M_INDEX ? 900000 : 300000;
+        const windowMs = 300000;
         const windowSec = Math.floor(at / windowMs) * (windowMs / 1000);
-        const prefix = i === POLYMARKET_15M_INDEX ? 'btc-updown-15m-' : 'btc-updown-5m-';
+        const prefix = i === POLYMARKET_ETH_INDEX ? 'eth-updown-5m-' : 'btc-updown-5m-';
         item.slug = this.demo ? `${prefix}${windowSec}` : this.feeds[i].slug;
         item.expiresAt = this.demo ? (windowSec + windowMs / 1000) * 1000 : this.feeds[i].expiresAt;
       }
