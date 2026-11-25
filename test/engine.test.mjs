@@ -26,7 +26,7 @@ const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9
 
 test('wire executions retain quiet prices, reject replay/order errors and rebuild known Binance ID gaps', async t => {
   for (const venue of [0, SPOT_INDEX]) for (const gap of [1, 6000]) for (const contiguous of [true, false]) await t.test(`${venue}: ${gap}ms contiguous=${contiguous}`, () => {
-    const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+    const m = new Monitor({ ...DEFAULT_SETTINGS, cooldownMs: 0 }, START); warm(m);
     const at = START + 200 + gap;
     if (gap > 200) { const quiet = m.state(at - 1); assert.equal(quiet.series[venue].ready, true); assert.equal(quiet.series[venue].move, 0); }
     const id = contiguous ? 3 : 4;
@@ -188,7 +188,7 @@ test('only valid current-session executions affect price; event age does not exc
 });
 
 test('counters process every execution without a chart tick and rearm only inside threshold', () => {
-  const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+  const m = new Monitor({ ...DEFAULT_SETTINGS, cooldownMs: 0 }, START); warm(m);
   send(m, 0, 100.02, START + 201, 3);
   send(m, 0, 100.03, START + 202, 4);
   send(m, 0, 99.98, START + 203, 5); // Crossing direction outside the band does not rearm.
@@ -227,7 +227,7 @@ test('aggregate IDs remain exact at the signed int64 boundary', async t => {
 });
 
 test('recent log spaces each market independently without dropping simultaneous entries or counts', () => {
-  const m = new Monitor(DEFAULT_SETTINGS, START); warm(m);
+  const m = new Monitor({ ...DEFAULT_SETTINGS, cooldownMs: 0 }, START); warm(m);
   const prices = [100, 200, 300, 400];
   const burst = (offset, id, factor) => prices.forEach((price, i) => send(m, i, price * factor, START + offset, id));
   burst(201, 3, 1.001);
@@ -245,14 +245,14 @@ test('recent log spaces each market independently without dropping simultaneous 
   assert.deepEqual(state.recent.slice(5).map(e => e.series).sort((a, b) => a - b), [0, 1, 2, 3, WEIGHTED_INDEX]);
   assert.ok(state.recent.slice(5).every(e => e.at === START + 1201));
   assert.deepEqual(state.series.slice(0, 4).map(s => s.up + s.down), [3, 3, 3, 3]);
-  m.reset(DEFAULT_SETTINGS, START + 1300);
+  m.reset({ ...DEFAULT_SETTINGS, cooldownMs: 0 }, START + 1300);
   m.state(START + 1500);
   send(m, 0, 101, START + 1501, 8);
   assert.deepEqual(m.state(START + 1501).recent.filter(e => e.series === 0).map(e => e.at), [START + 1501]);
 });
 
 test('Deribit batches every execution and Kraken snapshots never seed live history', () => {
-  const m = new Monitor(DEFAULT_SETTINGS, START);
+  const m = new Monitor({ ...DEFAULT_SETTINGS, cooldownMs: 0 }, START);
   m.connection(4, true); m.connection(5, true);
   const kraken = JSON.parse(wire(5, 100, START, 'first'));
   assert.equal(m.frame(5, JSON.stringify({ feed: 'trade_snapshot', product_id: 'PF_XBTUSD', trades: [kraken] }), START), 0);
@@ -410,4 +410,91 @@ test('diagnostic lag tracks event age, contributes to weighted lag and resets on
   assert.equal(demoState.series[POLYMARKET_INDEX].lag, 100);
   assert.equal(demoState.series[POLYMARKET_ETH_INDEX].lag, 110);
   assert.equal(demoState.series[WEIGHTED_INDEX].lag, 113);
+});
+
+test('cooldown and 50% rearm hysteresis stop edge-chatter signal spam and retain exact signal markers', () => {
+  const m = new Monitor(DEFAULT_SETTINGS, START); warm(m); // default: threshold=0.01%, cooldownMs=1000
+  send(m, 0, 100.015, START + 201, 3); // +0.015% -> UP #1
+  send(m, 0, 100.008, START + 210, 4); // +0.008% -> still outside 50% rearm band (0.005%)
+  send(m, 0, 100.015, START + 220, 5); // edge bounce -> blocked
+  send(m, 0, 100.000, START + 230, 6); // returns inside 0.005% -> rearms
+  send(m, 0, 100.015, START + 240, 7); // still inside 1000ms cooldown -> blocked
+  let s = m.state(START + 250);
+  assert.equal(s.series[0].up, 1);
+  // Exact crossing marker preserves the +0.015% move at START+201 even after price reverted.
+  const sig0 = s.signals.find(e => e.series === 0);
+  assert.ok(sig0);
+  assert.equal(sig0.at, START + 201);
+  assert.equal(sig0.direction, 1);
+  close(sig0.move, 0.015);
+  // After cooldown elapses and movement re-arms cleanly, next impulse counts.
+  send(m, 0, 100.000, START + 1000, 8);
+  m.state(START + 1201);
+  send(m, 0, 100.020, START + 1205, 9);
+  assert.equal(m.state(START + 1205).series[0].up, 2);
+});
+
+test('Binance Spot parses real-time @trade frames with exact int64 IDs and resets on kind switch', () => {
+  const m = new Monitor({ ...DEFAULT_SETTINGS, cooldownMs: 0 }, START);
+  m.connection(SPOT_INDEX, true);
+  const spotTrade = (price, at, id) => JSON.stringify({ e: 'trade', E: at, s: 'BTCUSDT', p: String(price), T: at, t: id }).replace(`"${id}"`, id);
+  assert.equal(m.frame(SPOT_INDEX, spotTrade(100, START, '9223372036854775803'), START), 1);
+  assert.equal(m.frame(SPOT_INDEX, spotTrade(100, START + 200, '9223372036854775804'), START + 200), 1);
+  assert.equal(m.frame(SPOT_INDEX, spotTrade(100.05, START + 201, '9223372036854775805'), START + 201), 1);
+  let s = m.state(START + 201).series[SPOT_INDEX];
+  assert.equal(s.ready, true);
+  assert.equal(s.streamKind, 'trade');
+  assert.equal(s.up, 1);
+  // Duplicate / out-of-order @trade ID is rejected.
+  assert.equal(m.frame(SPOT_INDEX, spotTrade(999, START + 202, '9223372036854775805'), START + 202), 0);
+  // Forward ID gap resets baseline and increments missed.
+  assert.equal(m.frame(SPOT_INDEX, spotTrade(100.1, START + 203, '9223372036854775807'), START + 203), 1);
+  s = m.state(START + 203).series[SPOT_INDEX];
+  assert.equal(s.ready, false);
+  assert.equal(s.missed, 1);
+  // Fallback from @trade to @aggTrade resets baseline cleanly without false ID gap.
+  assert.equal(m.frame(SPOT_INDEX, wire(SPOT_INDEX, 100.1, START + 500, 10), START + 500), 1);
+  assert.equal(m.state(START + 500).series[SPOT_INDEX].streamKind, 'aggTrade');
+  assert.equal(m.state(START + 500).series[SPOT_INDEX].missed, 1);
+});
+
+test('multi-trade batches at the same timestamp anchor the settled end-of-batch price', () => {
+  const m = new Monitor({ ...DEFAULT_SETTINGS, lookbackMs: 200, cooldownMs: 0 }, START);
+  m.connection(1, true);
+  // Bybit batch at START containing 100 -> 105; settled end-of-batch price is 105.
+  const batch = JSON.stringify({
+    topic: 'publicTrade.BTCUSDT',
+    type: 'snapshot',
+    data: [
+      { s: 'BTCUSDT', S: 'Buy', p: '100', T: START, i: 'b1' },
+      { s: 'BTCUSDT', S: 'Buy', p: '105', T: START, i: 'b2' },
+    ],
+  });
+  assert.equal(m.frame(1, batch, START), 2);
+  // 50ms later, price stays at 105.
+  assert.equal(m.frame(1, wire(1, 105, START + 50, 'b3'), START + 50), 1);
+  // At START + 200, baseline at START must be settled 105 (not stale 100), so move is 0%.
+  const s = m.state(START + 200).series[1];
+  assert.equal(s.ready, true);
+  close(s.move, 0);
+});
+
+test('dynamic volatility adapts effective threshold with 60s/240s realized vol and √lookback scaling', () => {
+  const m = new Monitor({ ...DEFAULT_SETTINGS, lookbackMs: 1000, threshold: 0.01, dynamicVol: true, dynamicVolMult: 2, cooldownMs: 0 }, START);
+  m.connection(0, true);
+  // Feed 65 seconds of alternating +/-0.1% moves (1s sigma = 0.1%).
+  let id = 1;
+  for (let sec = 0; sec <= 65; sec++) {
+    const p = sec % 2 === 0 ? 100 : 100.1;
+    send(m, 0, p, START + sec * 1000, id++);
+  }
+  const s = m.state(START + 65000).series[0];
+  assert.equal(s.volReady, true);
+  assert.equal(s.dynamicActive, true);
+  assert.ok(s.volPct > 0.08 && s.volPct < 0.12, `expected volPct ~0.10%, got ${s.volPct}`);
+  assert.ok(s.effectiveThreshold > 0.16 && s.effectiveThreshold < 0.24, `expected effective ~0.20%, got ${s.effectiveThreshold}`);
+  // A 0.05% move exceeds the 0.01% base floor but stays below the ~0.20% dynamic threshold.
+  const beforeUp = s.up;
+  send(m, 0, 100.15, START + 65200, id++);
+  assert.equal(m.state(START + 65200).series[0].up, beforeUp);
 });

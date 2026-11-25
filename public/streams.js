@@ -8,7 +8,7 @@ export const VENUES = [
   // Deribit's unauthenticated trade tape batches executions every 100 ms.
   { urls: ['wss://www.deribit.com/ws/api/v2'], subscribe: { jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['trades.BTC_USDC-PERPETUAL.100ms'] } }, ping: { jsonrpc: '2.0', id: 2, method: 'public/test', params: {} } },
   { urls: ['wss://futures.kraken.com/ws/v1', 'wss://www.cryptofacilities.com/ws/v1'], subscribe: { event: 'subscribe', feed: 'trade', product_ids: ['PF_XBTUSD'] }, heartbeat: { event: 'subscribe', feed: 'heartbeat' } },
-  { urls: ['wss://stream.binance.com/ws/btcusdt@aggTrade', 'wss://stream.binance.com/stream?streams=btcusdt@aggTrade'] },
+  { urls: ['wss://stream.binance.com/ws/btcusdt@trade', 'wss://stream.binance.com/stream?streams=btcusdt@trade', 'wss://stream.binance.com/ws/btcusdt@aggTrade', 'wss://stream.binance.com/stream?streams=btcusdt@aggTrade'] },
   { urls: ['wss://ws-subscriptions-clob.polymarket.com/ws/market'], marketUrl: 'https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-', slugPrefix: 'btc-updown-5m-', label: 'Polymarket BTC 5m', windowMs: 300000, subscribeMarket: assetId => ({ type: 'market', assets_ids: [assetId] }), ping: 'PING' },
   { urls: ['wss://ws-subscriptions-clob.polymarket.com/ws/market'], marketUrl: 'https://gamma-api.polymarket.com/markets?slug=eth-updown-5m-', slugPrefix: 'eth-updown-5m-', label: 'Polymarket ETH 5m', windowMs: 300000, subscribeMarket: assetId => ({ type: 'market', assets_ids: [assetId] }), ping: 'PING' },
 ];
